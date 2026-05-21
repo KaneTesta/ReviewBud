@@ -44,6 +44,7 @@ export async function resolveTypeScriptSymbolContext(
       line,
       symbol: request.symbol,
     }),
+    sourceCode: definitionSource,
     source: "language-service",
   };
 }

@@ -101,5 +101,6 @@ export interface SymbolContext {
   startLine: number;
   endLine: number;
   code: string;
+  sourceCode?: string;
   source?: "language-service" | "language-server" | "raw-file";
 }

@@ -54,6 +54,7 @@ export async function resolvePythonSymbolContextWithLsp(
         line: definitionLine,
         symbol: request.symbol,
       }),
+      sourceCode: definitionSource,
       source: "language-server",
     };
   } finally {

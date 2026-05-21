@@ -195,6 +195,7 @@ export async function fetchSymbolContext(request: SymbolContextRequest, userData
 
   return {
     ...extractSymbolContext(source, request),
+    sourceCode: source,
     source: "raw-file",
   };
 }

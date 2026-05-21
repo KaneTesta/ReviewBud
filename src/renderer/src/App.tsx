@@ -11,9 +11,11 @@ import {
   GitPullRequest,
   HelpCircle,
   Loader2,
+  Moon,
   MessageSquareText,
   RefreshCw,
   Search,
+  Sun,
   X,
 } from "lucide-react";
 import type {
@@ -34,8 +36,49 @@ import {
 import { buildDiffRows, tokenizeCodeLine } from "../../shared/symbol-context";
 
 const defaultUrl = "";
-const monacoTheme = "pr-tool-dark";
+const themeStorageKey = "pr-tool-theme";
+const monacoThemes = {
+  dark: "pr-tool-dark",
+  light: "pr-tool-light",
+} as const;
+const nonClickableSymbols = new Set([
+  "False",
+  "None",
+  "True",
+  "and",
+  "as",
+  "async",
+  "await",
+  "class",
+  "const",
+  "def",
+  "else",
+  "except",
+  "false",
+  "finally",
+  "for",
+  "from",
+  "function",
+  "if",
+  "import",
+  "in",
+  "interface",
+  "let",
+  "new",
+  "null",
+  "or",
+  "return",
+  "self",
+  "this",
+  "true",
+  "try",
+  "type",
+  "undefined",
+  "var",
+  "with",
+]);
 let monacoThemeDefined = false;
+type ThemeMode = keyof typeof monacoThemes;
 type MonacoApi = typeof import("monaco-editor/esm/vs/editor/editor.api.js");
 
 function loadMonaco(): Promise<MonacoApi> {
@@ -49,6 +92,7 @@ function loadMonaco(): Promise<MonacoApi> {
 }
 
 export function App() {
+  const [theme, setTheme] = useState<ThemeMode>(() => initialTheme());
   const [url, setUrl] = useState(defaultUrl);
   const [workspace, setWorkspace] = useState<ReviewWorkspace | null>(null);
   const [recent, setRecent] = useState<RecentPullRequest[]>([]);
@@ -64,6 +108,12 @@ export function App() {
     void refreshRecent();
   }, []);
 
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+    window.localStorage.setItem(themeStorageKey, theme);
+  }, [theme]);
+
   const currentFile = useMemo(() => {
     if (!workspace) return null;
     return workspace.pullRequest.files.find((file) => file.filename === selectedFile) ?? workspace.pullRequest.files[0] ?? null;
@@ -77,6 +127,7 @@ export function App() {
   }, [filter, workspace]);
 
   const showSymbolSplit = symbolState === "loading" || symbolState === "error" || symbolContexts.length > 0;
+  const nextTheme = theme === "dark" ? "light" : "dark";
 
   function closeSymbolContext() {
     setSymbolContexts([]);
@@ -192,6 +243,18 @@ export function App() {
             Load
           </button>
         </form>
+        <button
+          type="button"
+          className="theme-toggle"
+          role="switch"
+          aria-checked={theme === "dark"}
+          aria-label={`Switch to ${nextTheme} mode`}
+          title={`Switch to ${nextTheme} mode`}
+          onClick={() => setTheme(nextTheme)}
+        >
+          {theme === "dark" ? <Moon size={16} aria-hidden="true" /> : <Sun size={16} aria-hidden="true" />}
+          <span>{theme === "dark" ? "Dark" : "Light"}</span>
+        </button>
       </header>
 
       {error ? <div className="error-banner">{error}</div> : null}
@@ -219,12 +282,13 @@ export function App() {
             <>
               <PullRequestHeader workspace={workspace} />
               <div className={showSymbolSplit ? "review-columns split" : "review-columns"}>
-                <DiffViewer file={currentFile} discussions={workspace.pullRequest.discussions} onOpenSymbol={openSymbolContext} />
+                <DiffViewer file={currentFile} discussions={workspace.pullRequest.discussions} theme={theme} onOpenSymbol={openSymbolContext} />
                 {showSymbolSplit ? (
                   <SymbolContextPanel
                     contexts={symbolContexts}
                     state={symbolState}
                     error={symbolError}
+                    theme={theme}
                     onClose={closeSymbolContext}
                     onCloseContext={closeSymbolContextAt}
                     onOpenSymbol={(file, line, column, symbol) => openSymbolContext(file, line, column, symbol, true)}
@@ -239,6 +303,12 @@ export function App() {
       </section>
     </main>
   );
+}
+
+function initialTheme(): ThemeMode {
+  const savedTheme = window.localStorage.getItem(themeStorageKey);
+  if (savedTheme === "dark" || savedTheme === "light") return savedTheme;
+  return "light";
 }
 
 function RecentList({
@@ -353,10 +423,12 @@ function PullRequestHeader({ workspace }: { workspace: ReviewWorkspace }) {
 function DiffViewer({
   file,
   discussions,
+  theme,
   onOpenSymbol,
 }: {
   file: PullRequestFile;
   discussions: PullRequestDiscussion[];
+  theme: ThemeMode;
   onOpenSymbol: (file: string, line: number, column: number, symbol: string) => void;
 }) {
   const rows = useMemo(() => buildDiffRows(file.patch || "Diff omitted by GitHub API for this file."), [file.patch]);
@@ -375,7 +447,7 @@ function DiffViewer({
       </div>
       <div className="diff" role="region" aria-label={`Diff for ${file.filename}`}>
         {topDiscussions.length > 0 ? <InlineDiscussions discussions={topDiscussions} /> : null}
-        <DiffCodeEditor file={file} rows={rows} discussions={lineDiscussions} onOpenSymbol={onOpenSymbol} />
+        <DiffCodeEditor file={file} rows={rows} discussions={lineDiscussions} theme={theme} onOpenSymbol={onOpenSymbol} />
       </div>
     </section>
   );
@@ -385,11 +457,13 @@ function DiffCodeEditor({
   file,
   rows,
   discussions,
+  theme,
   onOpenSymbol,
 }: {
   file: PullRequestFile;
   rows: DiffRow[];
   discussions: PullRequestDiscussion[];
+  theme: ThemeMode;
   onOpenSymbol: (file: string, line: number, column: number, symbol: string) => void;
 }) {
   const editorElementRef = useRef<HTMLDivElement | null>(null);
@@ -421,7 +495,7 @@ function DiffCodeEditor({
         readOnly: true,
         domReadOnly: true,
         automaticLayout: true,
-        theme: monacoTheme,
+        theme: monacoThemes[theme],
         fontFamily: "var(--mono)",
         fontSize: 12,
         lineHeight: 18,
@@ -454,6 +528,8 @@ function DiffCodeEditor({
         if (!row?.newLine) return;
         const word = model.getWordAtPosition(position);
         if (!word) return;
+        const line = displayDiffLine(row);
+        if (!isClickableSymbol(line, word.word, word.startColumn - 1)) return;
         event.event.preventDefault();
         onOpenSymbolRef.current(file.filename, row.newLine, position.column, word.word);
       });
@@ -471,7 +547,7 @@ function DiffCodeEditor({
       disposed = true;
       cleanup();
     };
-  }, [discussionGroups, discussions, editorModel, file.filename]);
+  }, [discussionGroups, discussions, editorModel, file.filename, theme]);
 
   return (
     <div
@@ -487,6 +563,7 @@ function SymbolContextPanel({
   contexts,
   state,
   error,
+  theme,
   onClose,
   onCloseContext,
   onOpenSymbol,
@@ -494,6 +571,7 @@ function SymbolContextPanel({
   contexts: SymbolContext[];
   state: "idle" | "loading" | "error";
   error: string | null;
+  theme: ThemeMode;
   onClose: () => void;
   onCloseContext: (index: number) => void;
   onOpenSymbol: (file: string, line: number, column: number, symbol: string) => void;
@@ -539,7 +617,7 @@ function SymbolContextPanel({
                   <X size={14} aria-hidden="true" />
                 </button>
               </div>
-              <ContextCodeEditor context={context} onOpenSymbol={onOpenSymbol} />
+              <ContextCodeEditor context={context} theme={theme} onOpenSymbol={onOpenSymbol} />
             </article>
           ))}
         </div>
@@ -552,14 +630,18 @@ function SymbolContextPanel({
 
 function ContextCodeEditor({
   context,
+  theme,
   onOpenSymbol,
 }: {
   context: SymbolContext;
+  theme: ThemeMode;
   onOpenSymbol: (file: string, line: number, column: number, symbol: string) => void;
 }) {
   const editorElementRef = useRef<HTMLDivElement | null>(null);
   const onOpenSymbolRef = useRef(onOpenSymbol);
-  const lineCount = context.code.split("\n").length;
+  const editorCode = context.sourceCode ?? context.code;
+  const isFullFileContext = Boolean(context.sourceCode);
+  const lineCount = editorCode.split("\n").length;
   const editorHeight = Math.min(420, Math.max(96, lineCount * 18 + 16));
 
   useEffect(() => {
@@ -578,16 +660,13 @@ function ContextCodeEditor({
 
       defineMonacoTheme(monaco);
 
-      const model = monaco.editor.createModel(
-        context.code,
-        languageForFile(context.file),
-      );
+      const model = monaco.editor.createModel(editorCode, languageForFile(context.file));
       const editor = monaco.editor.create(editorElement, {
         model,
         readOnly: true,
         domReadOnly: true,
         automaticLayout: true,
-        theme: monacoTheme,
+        theme: monacoThemes[theme],
         fontFamily: "var(--mono)",
         fontSize: 12,
         lineHeight: 18,
@@ -602,10 +681,14 @@ function ContextCodeEditor({
         scrollBeyondLastLine: false,
         stickyScroll: { enabled: false },
         wordWrap: "off",
-        lineNumbers: (lineNumber: number) => String(context.startLine + lineNumber - 1),
+        lineNumbers: (lineNumber: number) => String(isFullFileContext ? lineNumber : context.startLine + lineNumber - 1),
         padding: { top: 8, bottom: 8 },
       });
-      const symbolDecorations = editor.createDecorationsCollection(symbolDecorationsForContext(monaco, context));
+      const symbolDecorations = editor.createDecorationsCollection(symbolDecorationsForContext(monaco, editorCode, context, isFullFileContext));
+      if (isFullFileContext) {
+        editor.revealLineInCenter(context.startLine);
+        editor.setPosition({ lineNumber: context.startLine, column: 1 });
+      }
 
       const clickDisposable = editor.onMouseDown((event: Monaco.editor.IEditorMouseEvent) => {
         if (!event.event.metaKey && !event.event.ctrlKey) return;
@@ -613,8 +696,11 @@ function ContextCodeEditor({
         if (!position) return;
         const word = model.getWordAtPosition(position);
         if (!word) return;
+        const line = model.getLineContent(position.lineNumber);
+        if (!isClickableSymbol(line, word.word, word.startColumn - 1)) return;
         event.event.preventDefault();
-        onOpenSymbolRef.current(context.file, context.startLine + position.lineNumber - 1, position.column, word.word);
+        const sourceLine = isFullFileContext ? position.lineNumber : context.startLine + position.lineNumber - 1;
+        onOpenSymbolRef.current(context.file, sourceLine, position.column, word.word);
       });
 
       cleanup = () => {
@@ -629,7 +715,7 @@ function ContextCodeEditor({
       disposed = true;
       cleanup();
     };
-  }, [context]);
+  }, [context, editorCode, isFullFileContext, theme]);
 
   return (
     <div
@@ -641,10 +727,16 @@ function ContextCodeEditor({
   );
 }
 
-function symbolDecorationsForContext(monaco: MonacoApi, context: SymbolContext): Monaco.editor.IModelDeltaDecoration[] {
-  return context.code.split("\n").flatMap((line, lineIndex) =>
+function symbolDecorationsForContext(
+  monaco: MonacoApi,
+  code: string,
+  context: SymbolContext,
+  isFullFileContext: boolean,
+): Monaco.editor.IModelDeltaDecoration[] {
+  const symbolDecorations = code.split("\n").flatMap((line, lineIndex) =>
     tokenizeCodeLine(line)
       .filter((token) => token.kind === "identifier")
+      .filter((token) => isClickableSymbol(line, token.text, token.startIndex))
       .map((token) => ({
         range: new monaco.Range(lineIndex + 1, token.startIndex + 1, lineIndex + 1, token.startIndex + token.text.length + 1),
         options: {
@@ -652,11 +744,25 @@ function symbolDecorationsForContext(monaco: MonacoApi, context: SymbolContext):
         },
       })),
   );
+
+  if (!isFullFileContext) {
+    return symbolDecorations;
+  }
+
+  const focusDecorations = Array.from({ length: context.endLine - context.startLine + 1 }, (_, index) => ({
+    range: new monaco.Range(context.startLine + index, 1, context.startLine + index, 1),
+    options: {
+      isWholeLine: true,
+      className: "context-focus-line",
+    },
+  }));
+
+  return [...focusDecorations, ...symbolDecorations];
 }
 
 function defineMonacoTheme(monaco: MonacoApi) {
   if (monacoThemeDefined) return;
-  monaco.editor.defineTheme(monacoTheme, {
+  monaco.editor.defineTheme(monacoThemes.dark, {
     base: "vs-dark",
     inherit: true,
     rules: [],
@@ -668,6 +774,20 @@ function defineMonacoTheme(monaco: MonacoApi) {
       "editorCursor.foreground": "#93c5fd",
       "editor.selectionBackground": "#264f78",
       "editorIndentGuide.background1": "#202938",
+    },
+  });
+  monaco.editor.defineTheme(monacoThemes.light, {
+    base: "vs",
+    inherit: true,
+    rules: [],
+    colors: {
+      "editor.background": "#f8fafc",
+      "editor.foreground": "#263241",
+      "editorLineNumber.foreground": "#8993a1",
+      "editorLineNumber.activeForeground": "#344054",
+      "editorCursor.foreground": "#3151b7",
+      "editor.selectionBackground": "#bfd4ff",
+      "editorIndentGuide.background1": "#d9e0ea",
     },
   });
   monacoThemeDefined = true;
@@ -700,6 +820,73 @@ function displayDiffLine(row: DiffRow): string {
   return row.text;
 }
 
+function isClickableSymbol(line: string, symbol: string, startIndex: number): boolean {
+  if (!symbol || nonClickableSymbols.has(symbol) || isInsideString(line, startIndex) || isInsideLineComment(line, startIndex)) {
+    return false;
+  }
+
+  const before = line.slice(0, startIndex);
+  const after = line.slice(startIndex + symbol.length);
+  if (new RegExp(`\\b(class|def|function|interface|type)\\s+${escapeRegExp(symbol)}\\b`).test(line)) {
+    return true;
+  }
+  if (new RegExp(`\\b(const|let|var)\\s+${escapeRegExp(symbol)}\\b\\s*=\\s*(async\\s*)?(function\\b|\\([^)]*\\)|[$A-Z_a-z][$\\w]*)?\\s*=>`).test(line)) {
+    return true;
+  }
+  if (/^\s*\(/.test(after)) {
+    return true;
+  }
+  if (before.endsWith(".") && /^\s*(\(|,|\)|$)/.test(after)) {
+    return true;
+  }
+  if (/^\s*(from\s+\S+\s+)?import\b/.test(line)) {
+    return true;
+  }
+  if (/\b(new|extends|implements)\s+$/.test(before)) {
+    return true;
+  }
+  return /^[A-Z]/.test(symbol) && !/^\s*:/.test(after);
+}
+
+function isInsideString(line: string, index: number): boolean {
+  let quote: "'" | "\"" | "`" | null = null;
+  let escaped = false;
+
+  for (let position = 0; position < index; position += 1) {
+    const char = line[position];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === "'" || char === "\"" || char === "`") {
+      quote = char;
+    }
+  }
+
+  return quote != null;
+}
+
+function isInsideLineComment(line: string, index: number): boolean {
+  const hashIndex = line.indexOf("#");
+  const slashIndex = line.indexOf("//");
+  const commentIndex = [hashIndex, slashIndex]
+    .filter((position) => position >= 0 && !isInsideString(line, position))
+    .sort((left, right) => left - right)[0];
+  return commentIndex != null && index > commentIndex;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function diffDecorationsForRows(
   monaco: MonacoApi,
   rows: DiffRow[],
@@ -730,6 +917,7 @@ function diffDecorationsForRows(
 
     const symbolDecorations = tokenizeCodeLine(displayDiffLine(row))
       .filter((token) => token.kind === "identifier")
+      .filter((token) => isClickableSymbol(displayDiffLine(row), token.text, token.startIndex))
       .map((token) => ({
         range: new monaco.Range(lineNumber, token.startIndex + 1, lineNumber, token.startIndex + token.text.length + 1),
         options: {
