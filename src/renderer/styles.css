@@ -110,7 +110,7 @@ a:focus-visible {
 }
 
 .topbar.loaded {
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 460px) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 400px) auto;
   align-items: center;
   min-height: 0;
   padding: 8px 16px;
@@ -161,22 +161,22 @@ a:focus-visible {
 .url-form {
   display: grid;
   grid-template-columns: 1fr auto;
-  gap: 8px;
+  gap: 6px;
 }
 
 .theme-toggle {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  min-width: 88px;
-  min-height: 40px;
+  gap: 6px;
+  min-width: 74px;
+  min-height: 32px;
   border: 1px solid var(--hairline);
   border-radius: 8px;
-  padding: 8px 12px;
+  padding: 6px 10px;
   background: var(--surface-1);
   color: var(--ink-muted);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
   line-height: 1.2;
 }
@@ -200,8 +200,9 @@ a:focus-visible {
 
 .url-form input {
   min-width: 0;
-  padding: 8px 12px;
-  line-height: 1.5;
+  padding: 6px 10px;
+  font-size: 13px;
+  line-height: 1.35;
 }
 
 .url-form input::placeholder {
@@ -212,14 +213,14 @@ a:focus-visible {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  min-height: 40px;
+  gap: 6px;
+  min-height: 32px;
   border: 0;
   border-radius: 8px;
-  padding: 8px 14px;
+  padding: 6px 12px;
   background: var(--primary);
   color: white;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
   line-height: 1.2;
 }
