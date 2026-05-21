@@ -2,3 +2,5 @@
 - Allow you to reply to comments
 - Allow you to star repos locally and these show up at the top of your search
 - Allow you to scroll up and down through the left pane code with just up or down keys
+- Way to enable focus mode until you whatever comes first out of submitting PR feedback or time period of your choice
+- Add feature list to readme
