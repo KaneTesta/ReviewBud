@@ -52,6 +52,23 @@ export interface ReviewNote {
   note: string;
 }
 
+export interface DraftReviewComment {
+  id: string;
+  file: string;
+  startLine: number;
+  endLine: number;
+  body: string;
+  createdAt: string;
+}
+
+export type ReviewOutcome = "approve" | "request-changes" | "comment";
+
+export interface DraftReviewSubmission {
+  outcome: ReviewOutcome;
+  body: string;
+  submittedAt: string;
+}
+
 export interface CachedPullRequest {
   summary: PullRequestSummary;
   files: PullRequestFile[];
@@ -63,8 +80,9 @@ export interface CachedPullRequest {
 export interface ReviewWorkspace {
   pullRequest: CachedPullRequest;
   notes: ReviewNote[];
+  draftComments?: DraftReviewComment[];
+  draftReview?: DraftReviewSubmission | null;
 }
-
 
 export interface DiffRow {
   text: string;

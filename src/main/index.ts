@@ -2,7 +2,8 @@ import { app, BrowserWindow, shell } from "electron";
 import path from "node:path";
 import { registerIpcHandlers } from "./ipc.js";
 
-const isDev = process.env.VITE_DEV_SERVER_URL || process.env.NODE_ENV === "development";
+const isDev =
+  process.env.VITE_DEV_SERVER_URL || process.env.NODE_ENV === "development";
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -10,7 +11,7 @@ function createWindow(): void {
     height: 920,
     minWidth: 1080,
     minHeight: 720,
-    title: "PR Tool",
+    title: "review bud",
     backgroundColor: "#010102",
     webPreferences: {
       preload: path.join(__dirname, "../preload/index.js"),
@@ -30,7 +31,9 @@ function createWindow(): void {
   } else if (isDev) {
     void mainWindow.loadURL("http://127.0.0.1:5173");
   } else {
-    void mainWindow.loadFile(path.join(__dirname, "../../dist-renderer/index.html"));
+    void mainWindow.loadFile(
+      path.join(__dirname, "../../dist-renderer/index.html"),
+    );
   }
 }
 

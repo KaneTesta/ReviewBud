@@ -1,5 +1,6 @@
 :root {
   color-scheme: light;
+  --review-action-pane-height: 0px;
   --canvas: #f4f6f8;
   --surface-1: #ffffff;
   --surface-2: #eef2f6;
@@ -83,11 +84,18 @@ a:focus-visible {
 
 .app-shell {
   display: grid;
-  grid-template-rows: auto auto 1fr;
+  grid-template-rows: auto minmax(0, 1fr);
   height: 100vh;
   min-height: 100vh;
   overflow: hidden;
   background: var(--canvas);
+}
+
+.content-shell {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
 }
 
 .topbar {
@@ -237,6 +245,9 @@ a:focus-visible {
 }
 
 .workspace {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  height: 100%;
   min-height: 0;
   overflow: hidden;
 }
@@ -304,6 +315,8 @@ a:focus-visible {
   grid-template-rows: minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
+  height: 100%;
+  padding-bottom: var(--review-action-pane-height);
   overflow: hidden;
   background: var(--canvas);
 }
@@ -493,6 +506,21 @@ a:focus-visible {
   box-shadow: inset 3px 0 0 rgb(245 202 66 / 0.9);
 }
 
+.diff-editor .diff-monaco-line-draft-comment {
+  background: color-mix(in srgb, var(--primary) 16%, transparent);
+  box-shadow: inset 3px 0 0 var(--primary);
+}
+
+.diff-editor .diff-monaco-line-commentable {
+  cursor: copy;
+}
+
+.diff-editor .diff-monaco-line-commentable:hover,
+.diff-editor .diff-monaco-line-selected-comment {
+  background: color-mix(in srgb, var(--primary) 22%, transparent);
+  box-shadow: inset 3px 0 0 var(--primary-hover);
+}
+
 :root[data-theme="light"] .diff-editor .diff-monaco-line-added {
   background: color-mix(in srgb, var(--success) 12%, transparent);
 }
@@ -504,6 +532,271 @@ a:focus-visible {
 :root[data-theme="light"] .diff-editor .diff-monaco-line-comment {
   background: rgb(217 174 26 / 0.2);
   box-shadow: inset 3px 0 0 rgb(217 174 26 / 0.82);
+}
+
+.review-action-pane {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  gap: 10px 16px;
+  align-items: center;
+  padding: 10px 16px;
+  border-top: 1px solid var(--hairline);
+  background: var(--surface-1);
+}
+
+.review-action-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.review-action-status strong {
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.review-action-status span {
+  flex: 0 0 auto;
+  color: var(--ink-tertiary);
+  font-size: 12px;
+}
+
+.review-actions,
+.composer-actions,
+.modal-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.shortcut-button,
+.primary-action,
+.secondary-action,
+.outcome-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  padding: 7px 10px;
+  background: var(--surface-2);
+  color: var(--ink-muted);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.shortcut-button:hover,
+.secondary-action:hover,
+.outcome-button:hover {
+  border-color: var(--hairline-strong);
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+.shortcut-button.primary,
+.primary-action {
+  border-color: color-mix(in srgb, var(--primary) 55%, var(--hairline));
+  background: var(--primary);
+  color: white;
+}
+
+.shortcut-button.primary:hover,
+.primary-action:hover {
+  background: var(--primary-hover);
+}
+
+.shortcut-button.active,
+.outcome-button.active {
+  border-color: color-mix(in srgb, var(--primary) 60%, var(--hairline-strong));
+  background: color-mix(in srgb, var(--primary) 14%, var(--surface-2));
+  color: var(--ink);
+}
+
+.primary-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+kbd {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 5px;
+  padding: 0 5px;
+  background: color-mix(in srgb, var(--surface-1) 68%, transparent);
+  color: currentColor;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.comment-mode-hint {
+  grid-column: 1 / -1;
+  color: var(--ink-subtle);
+  font-size: 12px;
+}
+
+.line-comment-composer {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px 12px;
+  padding: 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--canvas);
+}
+
+.composer-heading {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.composer-heading strong {
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.composer-heading span {
+  color: var(--ink-tertiary);
+  font-size: 12px;
+}
+
+.line-comment-composer textarea,
+.review-summary-input {
+  grid-column: 1 / -1;
+  width: 100%;
+  min-height: 78px;
+  resize: vertical;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--surface-1);
+  color: var(--ink);
+  line-height: 1.45;
+}
+
+.line-comment-composer .composer-actions {
+  grid-column: 1 / -1;
+}
+
+.draft-comment-list {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 8px;
+  max-height: 118px;
+  overflow: auto;
+}
+
+.draft-comment {
+  padding: 8px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.draft-comment span {
+  display: block;
+  overflow: hidden;
+  color: var(--ink-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.draft-comment p {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 4px 0 0;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  color: var(--ink-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(0 0 0 / 0.42);
+}
+
+.review-modal {
+  display: grid;
+  gap: 16px;
+  width: min(680px, 100%);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 12px;
+  padding: 18px;
+  background: var(--surface-1);
+  box-shadow: 0 18px 54px rgb(0 0 0 / 0.24);
+}
+
+.modal-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: start;
+}
+
+.modal-heading h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.modal-heading p {
+  margin: 5px 0 0;
+  color: var(--ink-subtle);
+  font-size: 13px;
+}
+
+.review-outcomes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.outcome-button {
+  justify-content: flex-start;
+  min-width: 0;
+}
+
+.outcome-button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.outcome-button kbd {
+  margin-left: auto;
 }
 
 .diff-discussion-zone {

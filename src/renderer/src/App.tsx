@@ -1,22 +1,32 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import type * as Monaco from "monaco-editor";
 import { createRoot, type Root } from "react-dom/client";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
+  ArrowLeft,
+  ArrowRight,
   CheckCircle2,
+  Eye,
   FileCode2,
+  GitPullRequestArrow,
   GitPullRequest,
+  MessageSquarePlus,
   Loader2,
   Moon,
   MessageSquareText,
   RefreshCw,
+  Send,
   Sun,
   X,
 } from "lucide-react";
 import type {
+  DraftReviewComment,
+  DraftReviewSubmission,
   PullRequestDiscussion,
   PullRequestFile,
+  ReviewOutcome,
   ReviewWorkspace,
   SymbolContext,
   DiffRow,
@@ -28,6 +38,14 @@ import {
   shouldCollapseDiscussion,
 } from "../../shared/discussions";
 import { buildDiffRows, tokenizeCodeLine } from "../../shared/symbol-context";
+import {
+  adjacentFile,
+  createDraftReview,
+  markFileViewed,
+  reviewProgress,
+  upsertDraftComment,
+  withReviewState,
+} from "../../shared/review-state";
 
 const defaultUrl = "";
 const themeStorageKey = "pr-tool-theme";
@@ -74,6 +92,11 @@ const nonClickableSymbols = new Set([
 let monacoThemeDefined = false;
 type ThemeMode = keyof typeof monacoThemes;
 type MonacoApi = typeof import("monaco-editor/esm/vs/editor/editor.api.js");
+type LineSelection = {
+  file: string;
+  startLine: number;
+  endLine: number;
+} | null;
 
 function loadMonaco(): Promise<MonacoApi> {
   return Promise.all([
@@ -93,9 +116,13 @@ export function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [symbolContexts, setSymbolContexts] = useState<SymbolContext[]>([]);
-  const [symbolState, setSymbolState] = useState<"idle" | "loading" | "error">("idle");
+  const [symbolState, setSymbolState] = useState<"idle" | "loading" | "error">(
+    "idle",
+  );
   const [symbolError, setSymbolError] = useState<string | null>(null);
-
+  const [commentMode, setCommentMode] = useState(false);
+  const [commentSelection, setCommentSelection] = useState<LineSelection>(null);
+  const [finishReviewOpen, setFinishReviewOpen] = useState(false);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -105,12 +132,57 @@ export function App() {
 
   const currentFile = useMemo(() => {
     if (!workspace) return null;
-    return workspace.pullRequest.files.find((file) => file.filename === selectedFile) ?? workspace.pullRequest.files[0] ?? null;
+    return (
+      workspace.pullRequest.files.find(
+        (file) => file.filename === selectedFile,
+      ) ??
+      workspace.pullRequest.files[0] ??
+      null
+    );
   }, [selectedFile, workspace]);
 
-
-  const showSymbolSplit = symbolState === "loading" || symbolState === "error" || symbolContexts.length > 0;
+  const showSymbolSplit =
+    symbolState === "loading" ||
+    symbolState === "error" ||
+    symbolContexts.length > 0;
   const nextTheme = theme === "dark" ? "light" : "dark";
+  const shortcuts = useMemo(() => keyboardShortcuts(), []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!workspace || isTypingTarget(event.target)) return;
+      const hasShortcutModifier = event.metaKey || event.ctrlKey;
+      if (!hasShortcutModifier) return;
+
+      if (event.key === "ArrowRight") {
+        event.preventDefault();
+        selectAdjacentFile("next");
+        return;
+      }
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        selectAdjacentFile("previous");
+        return;
+      }
+      if (event.key === "Enter" && event.shiftKey) {
+        event.preventDefault();
+        setFinishReviewOpen(true);
+        return;
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        markCurrentFileViewed();
+        return;
+      }
+      if (event.key.toLowerCase() === "c" && event.shiftKey) {
+        event.preventDefault();
+        setCommentMode((current) => !current);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [currentFile, workspace]);
 
   function closeSymbolContext() {
     setSymbolContexts([]);
@@ -119,13 +191,14 @@ export function App() {
   }
 
   function closeSymbolContextAt(index: number) {
-    setSymbolContexts((current) => current.filter((_, contextIndex) => contextIndex !== index));
+    setSymbolContexts((current) =>
+      current.filter((_, contextIndex) => contextIndex !== index),
+    );
     setSymbolError(null);
     if (symbolState === "error") {
       setSymbolState("idle");
     }
   }
-
 
   async function loadPullRequest(nextUrl = url) {
     setIsLoading(true);
@@ -140,14 +213,21 @@ export function App() {
       setSymbolError(null);
       setUrl(nextWorkspace.pullRequest.summary.url);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : String(loadError));
+      setError(
+        loadError instanceof Error ? loadError.message : String(loadError),
+      );
     } finally {
       setIsLoading(false);
     }
   }
 
-
-  async function openSymbolContext(file: string, line: number, column: number, symbol: string, append = false) {
+  async function openSymbolContext(
+    file: string,
+    line: number,
+    column: number,
+    symbol: string,
+    append = false,
+  ) {
     if (!workspace) return;
     const { summary } = workspace.pullRequest;
     setSymbolState("loading");
@@ -168,12 +248,73 @@ export function App() {
         headRepoFullName: summary.headRepoFullName,
         headSha: summary.headSha,
       });
-      setSymbolContexts((current) => (append ? [...current, nextContext] : [nextContext]));
+      setSymbolContexts((current) =>
+        append ? [...current, nextContext] : [nextContext],
+      );
       setSymbolState("idle");
     } catch (contextError) {
       setSymbolState("error");
-      setSymbolError(contextError instanceof Error ? contextError.message : String(contextError));
+      setSymbolError(
+        contextError instanceof Error
+          ? contextError.message
+          : String(contextError),
+      );
     }
+  }
+
+  function persistWorkspace(nextWorkspace: ReviewWorkspace) {
+    setWorkspace(nextWorkspace);
+    void window.prTool.saveReviewState(nextWorkspace.pullRequest.summary.id, {
+      notes: nextWorkspace.notes,
+      draftComments: nextWorkspace.draftComments ?? [],
+      draftReview: nextWorkspace.draftReview ?? null,
+    });
+  }
+
+  function selectAdjacentFile(direction: "next" | "previous") {
+    if (!workspace) return;
+    const nextFile = adjacentFile(
+      workspace.pullRequest.files,
+      currentFile?.filename ?? null,
+      direction,
+    );
+    if (nextFile) {
+      setSelectedFile(nextFile);
+      setCommentSelection(null);
+    }
+  }
+
+  function markCurrentFileViewed() {
+    if (!workspace || !currentFile) return;
+    persistWorkspace(
+      withReviewState(workspace, {
+        notes: markFileViewed(workspace.notes, currentFile.filename),
+      }),
+    );
+  }
+
+  function saveDraftComment(
+    selection: Exclude<LineSelection, null>,
+    body: string,
+  ) {
+    if (!workspace) return;
+    const nextComments = upsertDraftComment(workspace.draftComments ?? [], {
+      file: selection.file,
+      startLine: selection.startLine,
+      endLine: selection.endLine,
+      body,
+    });
+    persistWorkspace(
+      withReviewState(workspace, { draftComments: nextComments }),
+    );
+    setCommentSelection(null);
+  }
+
+  function saveDraftReview(outcome: ReviewOutcome, body: string) {
+    if (!workspace) return;
+    const draftReview = createDraftReview(outcome, body);
+    persistWorkspace(withReviewState(workspace, { draftReview }));
+    setFinishReviewOpen(false);
   }
 
   return (
@@ -185,7 +326,7 @@ export function App() {
           <div className="brand">
             <GitPullRequest size={22} aria-hidden="true" />
             <div>
-              <h1>PR Tool</h1>
+              <h1>review bud</h1>
               <p>Read GitHub pull requests locally without branch switching.</p>
             </div>
           </div>
@@ -204,7 +345,11 @@ export function App() {
             onChange={(event) => setUrl(event.target.value)}
           />
           <button type="submit" disabled={isLoading}>
-            {isLoading ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
+            {isLoading ? (
+              <Loader2 className="spin" size={16} aria-hidden="true" />
+            ) : (
+              <RefreshCw size={16} aria-hidden="true" />
+            )}
             Load
           </button>
         </form>
@@ -217,37 +362,83 @@ export function App() {
           title={`Switch to ${nextTheme} mode`}
           onClick={() => setTheme(nextTheme)}
         >
-          {theme === "dark" ? <Moon size={16} aria-hidden="true" /> : <Sun size={16} aria-hidden="true" />}
+          {theme === "dark" ? (
+            <Moon size={16} aria-hidden="true" />
+          ) : (
+            <Sun size={16} aria-hidden="true" />
+          )}
           <span>{theme === "dark" ? "Dark" : "Light"}</span>
         </button>
       </header>
 
-      {error ? <div className="error-banner">{error}</div> : null}
+      <section className="content-shell">
+        {error ? <div className="error-banner">{error}</div> : null}
 
-      <section className="workspace">
-        <section className="review-surface">
-          {workspace && currentFile ? (
-            <>
-              <div className={showSymbolSplit ? "review-columns split" : "review-columns"}>
-                <DiffViewer file={currentFile} discussions={workspace.pullRequest.discussions} theme={theme} onOpenSymbol={openSymbolContext} />
-                {showSymbolSplit ? (
-                  <SymbolContextPanel
-                    contexts={symbolContexts}
-                    state={symbolState}
-                    error={symbolError}
+        <section className="workspace">
+          <section className="review-surface">
+            {workspace && currentFile ? (
+              <>
+                <div
+                  className={
+                    showSymbolSplit ? "review-columns split" : "review-columns"
+                  }
+                >
+                  <DiffViewer
+                    file={currentFile}
+                    discussions={workspace.pullRequest.discussions}
+                    draftComments={workspace.draftComments ?? []}
                     theme={theme}
-                    onClose={closeSymbolContext}
-                    onCloseContext={closeSymbolContextAt}
-                    onOpenSymbol={(file, line, column, symbol) => openSymbolContext(file, line, column, symbol, true)}
+                    commentMode={commentMode}
+                    commentSelection={commentSelection}
+                    onOpenSymbol={openSymbolContext}
+                    onSelectCommentRange={setCommentSelection}
                   />
-                ) : null}
-              </div>
-            </>
-          ) : (
-            <Welcome />
-          )}
+                  {showSymbolSplit ? (
+                    <SymbolContextPanel
+                      contexts={symbolContexts}
+                      state={symbolState}
+                      error={symbolError}
+                      theme={theme}
+                      onClose={closeSymbolContext}
+                      onCloseContext={closeSymbolContextAt}
+                      onOpenSymbol={(file, line, column, symbol) =>
+                        openSymbolContext(file, line, column, symbol, true)
+                      }
+                    />
+                  ) : null}
+                </div>
+                <ReviewActionPane
+                  workspace={workspace}
+                  currentFile={currentFile}
+                  commentMode={commentMode}
+                  commentSelection={commentSelection}
+                  shortcuts={shortcuts}
+                  onNextFile={() => selectAdjacentFile("next")}
+                  onPreviousFile={() => selectAdjacentFile("previous")}
+                  onMarkViewed={markCurrentFileViewed}
+                  onToggleCommentMode={() =>
+                    setCommentMode((current) => !current)
+                  }
+                  onCancelComment={() => setCommentSelection(null)}
+                  onSaveComment={saveDraftComment}
+                  onFinishReview={() => setFinishReviewOpen(true)}
+                />
+              </>
+            ) : (
+              <Welcome />
+            )}
+          </section>
         </section>
       </section>
+      {workspace ? (
+        <FinishReviewModal
+          open={finishReviewOpen}
+          shortcuts={shortcuts}
+          existingDraft={workspace.draftReview ?? null}
+          onClose={() => setFinishReviewOpen(false)}
+          onSave={saveDraftReview}
+        />
+      ) : null}
     </main>
   );
 }
@@ -258,19 +449,487 @@ function initialTheme(): ThemeMode {
   return "light";
 }
 
+function keyboardShortcuts() {
+  const modifier = /Mac|iPhone|iPad|iPod/.test(navigator.platform)
+    ? "Cmd"
+    : "Ctrl";
+  return {
+    modifier,
+    nextFile: `${modifier}+Right`,
+    previousFile: `${modifier}+Left`,
+    viewed: `${modifier}+Enter`,
+    comment: `${modifier}+Shift+C`,
+    finish: `${modifier}+Shift+Enter`,
+    approve: `${modifier}+Shift+A`,
+    requestChanges: `${modifier}+Shift+R`,
+    submitComment: `${modifier}+Shift+M`,
+    saveComment: `${modifier}+S`,
+    cancel: "Esc",
+  };
+}
+
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return target.matches("input, textarea, select, [contenteditable='true']");
+}
+
+function ReviewActionPane({
+  workspace,
+  currentFile,
+  commentMode,
+  commentSelection,
+  shortcuts,
+  onNextFile,
+  onPreviousFile,
+  onMarkViewed,
+  onToggleCommentMode,
+  onCancelComment,
+  onSaveComment,
+  onFinishReview,
+}: {
+  workspace: ReviewWorkspace;
+  currentFile: PullRequestFile;
+  commentMode: boolean;
+  commentSelection: LineSelection;
+  shortcuts: ReturnType<typeof keyboardShortcuts>;
+  onNextFile: () => void;
+  onPreviousFile: () => void;
+  onMarkViewed: () => void;
+  onToggleCommentMode: () => void;
+  onCancelComment: () => void;
+  onSaveComment: (
+    selection: Exclude<LineSelection, null>,
+    body: string,
+  ) => void;
+  onFinishReview: () => void;
+}) {
+  const paneRef = useRef<HTMLElement | null>(null);
+  const progress = reviewProgress(workspace.notes);
+  const currentNote = workspace.notes.find(
+    (note) => note.file === currentFile.filename,
+  );
+  const draftComments = workspace.draftComments ?? [];
+
+  useEffect(() => {
+    const pane = paneRef.current;
+    if (!pane) return;
+    const updatePaneHeight = () => {
+      document.documentElement.style.setProperty(
+        "--review-action-pane-height",
+        `${pane.offsetHeight}px`,
+      );
+    };
+    updatePaneHeight();
+    const resizeObserver = new ResizeObserver(updatePaneHeight);
+    resizeObserver.observe(pane);
+    window.addEventListener("resize", updatePaneHeight);
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener("resize", updatePaneHeight);
+      document.documentElement.style.removeProperty("--review-action-pane-height");
+    };
+  }, [commentMode, commentSelection, draftComments.length]);
+
+  return (
+    <section ref={paneRef} className="review-action-pane" aria-label="Review actions">
+      <div className="review-action-status">
+        <strong>{currentFile.filename}</strong>
+        <span>
+          {currentNote?.status === "done"
+            ? "Viewed"
+            : `${progress.viewed}/${progress.total} files viewed`}
+        </span>
+        <span>
+          {draftComments.length} draft{" "}
+          {draftComments.length === 1 ? "comment" : "comments"}
+        </span>
+      </div>
+      <div className="review-actions">
+        <ShortcutButton
+          label="Previous file"
+          shortcut={shortcuts.previousFile}
+          onClick={onPreviousFile}
+        >
+          <ArrowLeft size={15} aria-hidden="true" />
+        </ShortcutButton>
+        <ShortcutButton
+          label="Next file"
+          shortcut={shortcuts.nextFile}
+          onClick={onNextFile}
+        >
+          <ArrowRight size={15} aria-hidden="true" />
+        </ShortcutButton>
+        <ShortcutButton
+          label="Mark viewed"
+          shortcut={shortcuts.viewed}
+          onClick={onMarkViewed}
+        >
+          <Eye size={15} aria-hidden="true" />
+        </ShortcutButton>
+        <ShortcutButton
+          label={commentMode ? "Comment on" : "Comment"}
+          shortcut={shortcuts.comment}
+          pressed={commentMode}
+          onClick={onToggleCommentMode}
+        >
+          <MessageSquarePlus size={15} aria-hidden="true" />
+        </ShortcutButton>
+        <ShortcutButton
+          label="Finish review"
+          shortcut={shortcuts.finish}
+          intent="primary"
+          onClick={onFinishReview}
+        >
+          <GitPullRequestArrow size={15} aria-hidden="true" />
+        </ShortcutButton>
+      </div>
+      {commentMode ? (
+        <div className="comment-mode-hint" role="status">
+          {commentSelection
+            ? "Add your draft comment below."
+            : "Click or drag changed lines in the diff to draft a comment."}
+        </div>
+      ) : null}
+      {commentSelection ? (
+        <LineCommentComposer
+          selection={commentSelection}
+          shortcuts={shortcuts}
+          onSave={onSaveComment}
+          onCancel={onCancelComment}
+        />
+      ) : null}
+      {draftComments.length > 0 ? (
+        <DraftCommentList comments={draftComments} />
+      ) : null}
+    </section>
+  );
+}
+
+function ShortcutButton({
+  label,
+  shortcut,
+  pressed,
+  intent = "secondary",
+  onClick,
+  children,
+}: {
+  label: string;
+  shortcut: string;
+  pressed?: boolean;
+  intent?: "primary" | "secondary";
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      className={`shortcut-button ${intent}${pressed ? " active" : ""}`}
+      aria-pressed={pressed}
+      title={`${label} (${shortcut})`}
+      onClick={onClick}
+    >
+      {children}
+      <span>{label}</span>
+      <kbd>{shortcut}</kbd>
+    </button>
+  );
+}
+
+function LineCommentComposer({
+  selection,
+  shortcuts,
+  onSave,
+  onCancel,
+}: {
+  selection: Exclude<LineSelection, null>;
+  shortcuts: ReturnType<typeof keyboardShortcuts>;
+  onSave: (selection: Exclude<LineSelection, null>, body: string) => void;
+  onCancel: () => void;
+}) {
+  const [body, setBody] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    textareaRef.current?.focus();
+  }, [selection]);
+
+  function save() {
+    if (body.trim()) {
+      onSave(selection, body);
+      setBody("");
+    }
+  }
+
+  return (
+    <form
+      className="line-comment-composer"
+      onSubmit={(event) => {
+        event.preventDefault();
+        save();
+      }}
+    >
+      <div className="composer-heading">
+        <strong>
+          {selection.file}:
+          {selection.startLine === selection.endLine
+            ? selection.startLine
+            : `${selection.startLine}-${selection.endLine}`}
+        </strong>
+        <span>Draft line comment</span>
+      </div>
+      <textarea
+        ref={textareaRef}
+        value={body}
+        aria-label="Draft line comment"
+        placeholder="Leave a comment on this line range"
+        onChange={(event) => setBody(event.target.value)}
+        onKeyDown={(event) => {
+          if (
+            (event.metaKey || event.ctrlKey) &&
+            event.key.toLowerCase() === "s"
+          ) {
+            event.preventDefault();
+            save();
+          }
+          if (event.key === "Escape") {
+            event.preventDefault();
+            onCancel();
+          }
+        }}
+      />
+      <div className="composer-actions">
+        <button
+          type="button"
+          className="secondary-action"
+          title={`Cancel (${shortcuts.cancel})`}
+          onClick={onCancel}
+        >
+          <X size={14} aria-hidden="true" />
+          Cancel
+          <kbd>{shortcuts.cancel}</kbd>
+        </button>
+        <button
+          type="submit"
+          className="primary-action"
+          disabled={!body.trim()}
+          title={`Save comment (${shortcuts.saveComment})`}
+        >
+          <Send size={14} aria-hidden="true" />
+          Save comment
+          <kbd>{shortcuts.saveComment}</kbd>
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function DraftCommentList({ comments }: { comments: DraftReviewComment[] }) {
+  return (
+    <div className="draft-comment-list" aria-label="Draft review comments">
+      {comments.map((comment) => (
+        <article key={comment.id} className="draft-comment">
+          <span>
+            {comment.file}:
+            {comment.startLine === comment.endLine
+              ? comment.startLine
+              : `${comment.startLine}-${comment.endLine}`}
+          </span>
+          <p>{comment.body}</p>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function FinishReviewModal({
+  open,
+  shortcuts,
+  existingDraft,
+  onClose,
+  onSave,
+}: {
+  open: boolean;
+  shortcuts: ReturnType<typeof keyboardShortcuts>;
+  existingDraft: DraftReviewSubmission | null;
+  onClose: () => void;
+  onSave: (outcome: ReviewOutcome, body: string) => void;
+}) {
+  const [outcome, setOutcome] = useState<ReviewOutcome>(
+    existingDraft?.outcome ?? "comment",
+  );
+  const [body, setBody] = useState(existingDraft?.body ?? "");
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setOutcome(existingDraft?.outcome ?? "comment");
+    setBody(existingDraft?.body ?? "");
+    window.setTimeout(() => closeButtonRef.current?.focus(), 0);
+  }, [existingDraft, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (!(event.metaKey || event.ctrlKey) || !event.shiftKey) return;
+      if (event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        setOutcome("approve");
+      }
+      if (event.key.toLowerCase() === "r") {
+        event.preventDefault();
+        setOutcome("request-changes");
+      }
+      if (event.key.toLowerCase() === "m") {
+        event.preventDefault();
+        setOutcome("comment");
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        onSave(outcome, body);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [body, onClose, onSave, open, outcome]);
+
+  if (!open) return null;
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section
+        className="review-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="finish-review-title"
+      >
+        <div className="modal-heading">
+          <div>
+            <h2 id="finish-review-title">Finish review</h2>
+            <p>Choose the review result and leave an overall comment.</p>
+          </div>
+          <button
+            ref={closeButtonRef}
+            type="button"
+            className="icon-button"
+            title={`Close (${shortcuts.cancel})`}
+            aria-label="Close finish review"
+            onClick={onClose}
+          >
+            <X size={15} aria-hidden="true" />
+          </button>
+        </div>
+        <div
+          className="review-outcomes"
+          role="radiogroup"
+          aria-label="Review outcome"
+        >
+          <OutcomeButton
+            outcome="approve"
+            active={outcome === "approve"}
+            shortcut={shortcuts.approve}
+            onSelect={setOutcome}
+          />
+          <OutcomeButton
+            outcome="request-changes"
+            active={outcome === "request-changes"}
+            shortcut={shortcuts.requestChanges}
+            onSelect={setOutcome}
+          />
+          <OutcomeButton
+            outcome="comment"
+            active={outcome === "comment"}
+            shortcut={shortcuts.submitComment}
+            onSelect={setOutcome}
+          />
+        </div>
+        <textarea
+          className="review-summary-input"
+          aria-label="Review comment"
+          value={body}
+          placeholder="Add a summary comment"
+          onChange={(event) => setBody(event.target.value)}
+        />
+        <div className="modal-actions">
+          <button
+            type="button"
+            className="secondary-action"
+            title={`Cancel (${shortcuts.cancel})`}
+            onClick={onClose}
+          >
+            <X size={14} aria-hidden="true" />
+            Cancel
+            <kbd>{shortcuts.cancel}</kbd>
+          </button>
+          <button
+            type="button"
+            className="primary-action"
+            title={`Save review (${shortcuts.finish})`}
+            onClick={() => onSave(outcome, body)}
+          >
+            <Send size={14} aria-hidden="true" />
+            Save review
+            <kbd>{shortcuts.finish}</kbd>
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function OutcomeButton({
+  outcome,
+  active,
+  shortcut,
+  onSelect,
+}: {
+  outcome: ReviewOutcome;
+  active: boolean;
+  shortcut: string;
+  onSelect: (outcome: ReviewOutcome) => void;
+}) {
+  const label =
+    outcome === "approve"
+      ? "Approve"
+      : outcome === "request-changes"
+        ? "Request changes"
+        : "Comment";
+  return (
+    <button
+      type="button"
+      className={active ? "outcome-button active" : "outcome-button"}
+      role="radio"
+      aria-checked={active}
+      title={`${label} (${shortcut})`}
+      onClick={() => onSelect(outcome)}
+    >
+      <CheckCircle2 size={15} aria-hidden="true" />
+      <span>{label}</span>
+      <kbd>{shortcut}</kbd>
+    </button>
+  );
+}
+
 function PullRequestHeader({ workspace }: { workspace: ReviewWorkspace }) {
   const { summary } = workspace.pullRequest;
   return (
     <section className="pr-header">
       <div>
-        <div className="eyebrow">{summary.owner}/{summary.repo}#{summary.number}</div>
+        <div className="eyebrow">
+          {summary.owner}/{summary.repo}#{summary.number}
+        </div>
         <h2>
           <a href={summary.url} target="_blank" rel="noreferrer">
             {summary.title}
           </a>
         </h2>
         <p>
-          {summary.author} wants to merge <strong>{summary.headRef}</strong> into <strong>{summary.baseRef}</strong>
+          {summary.author} wants to merge <strong>{summary.headRef}</strong>{" "}
+          into <strong>{summary.baseRef}</strong>
         </p>
       </div>
       <div className="stats">
@@ -286,18 +945,48 @@ function PullRequestHeader({ workspace }: { workspace: ReviewWorkspace }) {
 function DiffViewer({
   file,
   discussions,
+  draftComments,
   theme,
+  commentMode,
+  commentSelection,
   onOpenSymbol,
+  onSelectCommentRange,
 }: {
   file: PullRequestFile;
   discussions: PullRequestDiscussion[];
+  draftComments: DraftReviewComment[];
   theme: ThemeMode;
-  onOpenSymbol: (file: string, line: number, column: number, symbol: string) => void;
+  commentMode: boolean;
+  commentSelection: LineSelection;
+  onOpenSymbol: (
+    file: string,
+    line: number,
+    column: number,
+    symbol: string,
+  ) => void;
+  onSelectCommentRange: (selection: Exclude<LineSelection, null>) => void;
 }) {
-  const rows = useMemo(() => buildDiffRows(file.patch || "Diff omitted by GitHub API for this file."), [file.patch]);
-  const fileDiscussions = useMemo(() => discussionsForFile(discussions, file.filename), [discussions, file.filename]);
-  const topDiscussions = useMemo(() => fileDiscussions.filter((discussion) => !discussion.position), [fileDiscussions]);
-  const lineDiscussions = useMemo(() => fileDiscussions.filter((discussion) => discussion.position), [fileDiscussions]);
+  const rows = useMemo(
+    () =>
+      buildDiffRows(file.patch || "Diff omitted by GitHub API for this file."),
+    [file.patch],
+  );
+  const fileDiscussions = useMemo(
+    () => discussionsForFile(discussions, file.filename),
+    [discussions, file.filename],
+  );
+  const fileDraftComments = useMemo(
+    () => draftComments.filter((comment) => comment.file === file.filename),
+    [draftComments, file.filename],
+  );
+  const topDiscussions = useMemo(
+    () => fileDiscussions.filter((discussion) => !discussion.position),
+    [fileDiscussions],
+  );
+  const lineDiscussions = useMemo(
+    () => fileDiscussions.filter((discussion) => discussion.position),
+    [fileDiscussions],
+  );
 
   return (
     <section className="diff-panel">
@@ -305,12 +994,32 @@ function DiffViewer({
         <FileCode2 size={18} aria-hidden="true" />
         <div>
           <h3>{file.filename}</h3>
-          <p>{file.status} · {file.changes} changes</p>
+          <p>
+            {file.status} · {file.changes} changes
+          </p>
         </div>
       </div>
-      <div className="diff" role="region" aria-label={`Diff for ${file.filename}`}>
-        {topDiscussions.length > 0 ? <InlineDiscussions discussions={topDiscussions} /> : null}
-        <DiffCodeEditor file={file} rows={rows} discussions={lineDiscussions} theme={theme} onOpenSymbol={onOpenSymbol} />
+      <div
+        className="diff"
+        role="region"
+        aria-label={`Diff for ${file.filename}`}
+      >
+        {topDiscussions.length > 0 ? (
+          <InlineDiscussions discussions={topDiscussions} />
+        ) : null}
+        <DiffCodeEditor
+          file={file}
+          rows={rows}
+          discussions={lineDiscussions}
+          draftComments={fileDraftComments}
+          theme={theme}
+          commentMode={commentMode}
+          commentSelection={
+            commentSelection?.file === file.filename ? commentSelection : null
+          }
+          onOpenSymbol={onOpenSymbol}
+          onSelectCommentRange={onSelectCommentRange}
+        />
       </div>
     </section>
   );
@@ -320,25 +1029,58 @@ function DiffCodeEditor({
   file,
   rows,
   discussions,
+  draftComments,
   theme,
+  commentMode,
+  commentSelection,
   onOpenSymbol,
+  onSelectCommentRange,
 }: {
   file: PullRequestFile;
   rows: DiffRow[];
   discussions: PullRequestDiscussion[];
+  draftComments: DraftReviewComment[];
   theme: ThemeMode;
-  onOpenSymbol: (file: string, line: number, column: number, symbol: string) => void;
+  commentMode: boolean;
+  commentSelection: LineSelection;
+  onOpenSymbol: (
+    file: string,
+    line: number,
+    column: number,
+    symbol: string,
+  ) => void;
+  onSelectCommentRange: (selection: Exclude<LineSelection, null>) => void;
 }) {
   const editorElementRef = useRef<HTMLDivElement | null>(null);
   const onOpenSymbolRef = useRef(onOpenSymbol);
+  const onSelectCommentRangeRef = useRef(onSelectCommentRange);
+  const commentModeRef = useRef(commentMode);
+  const dragStartLineRef = useRef<number | null>(null);
   const editorModel = useMemo(() => buildDiffEditorModel(rows), [rows]);
-  const discussionGroups = useMemo(() => discussionsByPosition(discussions, rows.length), [discussions, rows.length]);
-  const discussionZoneHeight = discussionGroups.reduce((total, group) => total + discussionGroupHeight(group.discussions), 0);
-  const editorHeight = Math.max(240, editorModel.lines.length * 18 + discussionZoneHeight + 16);
+  const discussionGroups = useMemo(
+    () => discussionsByPosition(discussions, rows.length),
+    [discussions, rows.length],
+  );
+  const discussionZoneHeight = discussionGroups.reduce(
+    (total, group) => total + discussionGroupHeight(group.discussions),
+    0,
+  );
+  const editorHeight = Math.max(
+    240,
+    editorModel.lines.length * 18 + discussionZoneHeight + 16,
+  );
 
   useEffect(() => {
     onOpenSymbolRef.current = onOpenSymbol;
   }, [onOpenSymbol]);
+
+  useEffect(() => {
+    onSelectCommentRangeRef.current = onSelectCommentRange;
+  }, [onSelectCommentRange]);
+
+  useEffect(() => {
+    commentModeRef.current = commentMode;
+  }, [commentMode]);
 
   useEffect(() => {
     const editorElement = editorElementRef.current;
@@ -352,7 +1094,10 @@ function DiffCodeEditor({
 
       defineMonacoTheme(monaco);
 
-      const model = monaco.editor.createModel(editorModel.source, languageForFile(file.filename));
+      const model = monaco.editor.createModel(
+        editorModel.source,
+        languageForFile(file.filename),
+      );
       const editor = monaco.editor.create(editorElement, {
         model,
         readOnly: true,
@@ -375,30 +1120,72 @@ function DiffCodeEditor({
         scrollBeyondLastLine: false,
         stickyScroll: { enabled: false },
         wordWrap: "off",
-        lineNumbers: (lineNumber: number) => editorModel.lineNumbers[lineNumber - 1] ?? "",
+        lineNumbers: (lineNumber: number) =>
+          editorModel.lineNumbers[lineNumber - 1] ?? "",
         padding: { top: 8, bottom: 8 },
       });
       const diffDecorations = editor.createDecorationsCollection(
-        diffDecorationsForRows(monaco, editorModel.rows, discussions),
+        diffDecorationsForRows(
+          monaco,
+          editorModel.rows,
+          discussions,
+          draftComments,
+          commentMode,
+          commentSelection,
+        ),
       );
-      const discussionZoneRoots = applyDiffDiscussionZones(editor, discussionGroups);
+      const discussionZoneRoots = applyDiffDiscussionZones(
+        editor,
+        discussionGroups,
+      );
 
-      const clickDisposable = editor.onMouseDown((event: Monaco.editor.IEditorMouseEvent) => {
-        if (!event.event.metaKey && !event.event.ctrlKey) return;
-        const position = event.target.position;
-        if (!position) return;
-        const row = editorModel.rows[position.lineNumber - 1];
-        if (!row?.newLine) return;
-        const word = model.getWordAtPosition(position);
-        if (!word) return;
-        const line = displayDiffLine(row);
-        if (!isClickableSymbol(line, word.word, word.startColumn - 1)) return;
-        event.event.preventDefault();
-        onOpenSymbolRef.current(file.filename, row.newLine, position.column, word.word);
-      });
+      const clickDisposable = editor.onMouseDown(
+        (event: Monaco.editor.IEditorMouseEvent) => {
+          if (commentModeRef.current) {
+            const newLine = newLineFromMouseEvent(event, editorModel.rows);
+            if (newLine) {
+              dragStartLineRef.current = newLine;
+              event.event.preventDefault();
+            }
+            return;
+          }
+          if (!event.event.metaKey && !event.event.ctrlKey) return;
+          const position = event.target.position;
+          if (!position) return;
+          const row = editorModel.rows[position.lineNumber - 1];
+          if (!row?.newLine) return;
+          const word = model.getWordAtPosition(position);
+          if (!word) return;
+          const line = displayDiffLine(row);
+          if (!isClickableSymbol(line, word.word, word.startColumn - 1)) return;
+          event.event.preventDefault();
+          onOpenSymbolRef.current(
+            file.filename,
+            row.newLine,
+            position.column,
+            word.word,
+          );
+        },
+      );
+      const mouseUpDisposable = editor.onMouseUp(
+        (event: Monaco.editor.IEditorMouseEvent) => {
+          if (!commentModeRef.current || dragStartLineRef.current == null)
+            return;
+          const endLine =
+            newLineFromMouseEvent(event, editorModel.rows) ??
+            dragStartLineRef.current;
+          onSelectCommentRangeRef.current({
+            file: file.filename,
+            startLine: Math.min(dragStartLineRef.current, endLine),
+            endLine: Math.max(dragStartLineRef.current, endLine),
+          });
+          dragStartLineRef.current = null;
+        },
+      );
 
       cleanup = () => {
         clickDisposable.dispose();
+        mouseUpDisposable.dispose();
         diffDecorations.clear();
         discussionZoneRoots.forEach((root) => root.unmount());
         editor.dispose();
@@ -410,7 +1197,16 @@ function DiffCodeEditor({
       disposed = true;
       cleanup();
     };
-  }, [discussionGroups, discussions, editorModel, file.filename, theme]);
+  }, [
+    commentMode,
+    commentSelection,
+    discussionGroups,
+    discussions,
+    draftComments,
+    editorModel,
+    file.filename,
+    theme,
+  ]);
 
   return (
     <div
@@ -437,7 +1233,12 @@ function SymbolContextPanel({
   theme: ThemeMode;
   onClose: () => void;
   onCloseContext: (index: number) => void;
-  onOpenSymbol: (file: string, line: number, column: number, symbol: string) => void;
+  onOpenSymbol: (
+    file: string,
+    line: number,
+    column: number,
+    symbol: string,
+  ) => void;
 }) {
   const latestContext = contexts.at(-1) ?? null;
 
@@ -450,25 +1251,41 @@ function SymbolContextPanel({
             {state === "loading"
               ? "Loading"
               : latestContext
-                ? latestContext.source === "language-service" || latestContext.source === "language-server"
+                ? latestContext.source === "language-service" ||
+                  latestContext.source === "language-server"
                   ? "Definition"
                   : `${latestContext.startLine}-${latestContext.endLine}`
                 : "Cmd-click"}
           </span>
-          <button type="button" className="icon-button" aria-label="Close context pane" title="Close context pane" onClick={onClose}>
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="Close context pane"
+            title="Close context pane"
+            onClick={onClose}
+          >
             <X size={15} aria-hidden="true" />
           </button>
         </div>
       </div>
-      {state === "error" ? <p className="context-error">{error ?? "Could not load symbol context."}</p> : null}
+      {state === "error" ? (
+        <p className="context-error">
+          {error ?? "Could not load symbol context."}
+        </p>
+      ) : null}
       {contexts.length > 0 ? (
         <div className="context-stack">
           {contexts.map((context, contextIndex) => (
-            <article className="context-entry" key={`${context.file}-${context.startLine}-${context.symbol}-${contextIndex}`}>
+            <article
+              className="context-entry"
+              key={`${context.file}-${context.startLine}-${context.symbol}-${contextIndex}`}
+            >
               <div className="context-entry-heading">
                 <div className="context-title">
                   <strong>{context.title}</strong>
-                  <span>{context.file} · lines {context.startLine}-{context.endLine}</span>
+                  <span>
+                    {context.file} · lines {context.startLine}-{context.endLine}
+                  </span>
                 </div>
                 <button
                   type="button"
@@ -480,12 +1297,19 @@ function SymbolContextPanel({
                   <X size={14} aria-hidden="true" />
                 </button>
               </div>
-              <ContextCodeEditor context={context} theme={theme} onOpenSymbol={onOpenSymbol} />
+              <ContextCodeEditor
+                context={context}
+                theme={theme}
+                onOpenSymbol={onOpenSymbol}
+              />
             </article>
           ))}
         </div>
       ) : state !== "error" ? (
-        <p className="muted">Cmd-click an identifier in the diff to inspect its implementation here.</p>
+        <p className="muted">
+          Cmd-click an identifier in the diff to inspect its implementation
+          here.
+        </p>
       ) : null}
     </section>
   );
@@ -498,7 +1322,12 @@ function ContextCodeEditor({
 }: {
   context: SymbolContext;
   theme: ThemeMode;
-  onOpenSymbol: (file: string, line: number, column: number, symbol: string) => void;
+  onOpenSymbol: (
+    file: string,
+    line: number,
+    column: number,
+    symbol: string,
+  ) => void;
 }) {
   const editorElementRef = useRef<HTMLDivElement | null>(null);
   const onOpenSymbolRef = useRef(onOpenSymbol);
@@ -523,7 +1352,10 @@ function ContextCodeEditor({
 
       defineMonacoTheme(monaco);
 
-      const model = monaco.editor.createModel(editorCode, languageForFile(context.file));
+      const model = monaco.editor.createModel(
+        editorCode,
+        languageForFile(context.file),
+      );
       const editor = monaco.editor.create(editorElement, {
         model,
         readOnly: true,
@@ -544,27 +1376,46 @@ function ContextCodeEditor({
         scrollBeyondLastLine: false,
         stickyScroll: { enabled: false },
         wordWrap: "off",
-        lineNumbers: (lineNumber: number) => String(isFullFileContext ? lineNumber : context.startLine + lineNumber - 1),
+        lineNumbers: (lineNumber: number) =>
+          String(
+            isFullFileContext ? lineNumber : context.startLine + lineNumber - 1,
+          ),
         padding: { top: 8, bottom: 8 },
       });
-      const symbolDecorations = editor.createDecorationsCollection(symbolDecorationsForContext(monaco, editorCode, context, isFullFileContext));
+      const symbolDecorations = editor.createDecorationsCollection(
+        symbolDecorationsForContext(
+          monaco,
+          editorCode,
+          context,
+          isFullFileContext,
+        ),
+      );
       if (isFullFileContext) {
         editor.revealLineInCenter(context.startLine);
         editor.setPosition({ lineNumber: context.startLine, column: 1 });
       }
 
-      const clickDisposable = editor.onMouseDown((event: Monaco.editor.IEditorMouseEvent) => {
-        if (!event.event.metaKey && !event.event.ctrlKey) return;
-        const position = event.target.position;
-        if (!position) return;
-        const word = model.getWordAtPosition(position);
-        if (!word) return;
-        const line = model.getLineContent(position.lineNumber);
-        if (!isClickableSymbol(line, word.word, word.startColumn - 1)) return;
-        event.event.preventDefault();
-        const sourceLine = isFullFileContext ? position.lineNumber : context.startLine + position.lineNumber - 1;
-        onOpenSymbolRef.current(context.file, sourceLine, position.column, word.word);
-      });
+      const clickDisposable = editor.onMouseDown(
+        (event: Monaco.editor.IEditorMouseEvent) => {
+          if (!event.event.metaKey && !event.event.ctrlKey) return;
+          const position = event.target.position;
+          if (!position) return;
+          const word = model.getWordAtPosition(position);
+          if (!word) return;
+          const line = model.getLineContent(position.lineNumber);
+          if (!isClickableSymbol(line, word.word, word.startColumn - 1)) return;
+          event.event.preventDefault();
+          const sourceLine = isFullFileContext
+            ? position.lineNumber
+            : context.startLine + position.lineNumber - 1;
+          onOpenSymbolRef.current(
+            context.file,
+            sourceLine,
+            position.column,
+            word.word,
+          );
+        },
+      );
 
       cleanup = () => {
         clickDisposable.dispose();
@@ -601,7 +1452,12 @@ function symbolDecorationsForContext(
       .filter((token) => token.kind === "identifier")
       .filter((token) => isClickableSymbol(line, token.text, token.startIndex))
       .map((token) => ({
-        range: new monaco.Range(lineIndex + 1, token.startIndex + 1, lineIndex + 1, token.startIndex + token.text.length + 1),
+        range: new monaco.Range(
+          lineIndex + 1,
+          token.startIndex + 1,
+          lineIndex + 1,
+          token.startIndex + token.text.length + 1,
+        ),
         options: {
           inlineClassName: "context-symbol-token",
         },
@@ -612,13 +1468,21 @@ function symbolDecorationsForContext(
     return symbolDecorations;
   }
 
-  const focusDecorations = Array.from({ length: context.endLine - context.startLine + 1 }, (_, index) => ({
-    range: new monaco.Range(context.startLine + index, 1, context.startLine + index, 1),
-    options: {
-      isWholeLine: true,
-      className: "context-focus-line",
-    },
-  }));
+  const focusDecorations = Array.from(
+    { length: context.endLine - context.startLine + 1 },
+    (_, index) => ({
+      range: new monaco.Range(
+        context.startLine + index,
+        1,
+        context.startLine + index,
+        1,
+      ),
+      options: {
+        isWholeLine: true,
+        className: "context-focus-line",
+      },
+    }),
+  );
 
   return [...focusDecorations, ...symbolDecorations];
 }
@@ -663,7 +1527,12 @@ function languageForFile(file: string): string {
   return "plaintext";
 }
 
-function buildDiffEditorModel(rows: DiffRow[]): { source: string; lines: string[]; lineNumbers: string[]; rows: DiffRow[] } {
+function buildDiffEditorModel(rows: DiffRow[]): {
+  source: string;
+  lines: string[];
+  lineNumbers: string[];
+  rows: DiffRow[];
+} {
   const lines = rows.map((row) => displayDiffLine(row));
   return {
     source: lines.join("\n"),
@@ -683,17 +1552,34 @@ function displayDiffLine(row: DiffRow): string {
   return row.text;
 }
 
-function isClickableSymbol(line: string, symbol: string, startIndex: number): boolean {
-  if (!symbol || nonClickableSymbols.has(symbol) || isInsideString(line, startIndex) || isInsideLineComment(line, startIndex)) {
+function isClickableSymbol(
+  line: string,
+  symbol: string,
+  startIndex: number,
+): boolean {
+  if (
+    !symbol ||
+    nonClickableSymbols.has(symbol) ||
+    isInsideString(line, startIndex) ||
+    isInsideLineComment(line, startIndex)
+  ) {
     return false;
   }
 
   const before = line.slice(0, startIndex);
   const after = line.slice(startIndex + symbol.length);
-  if (new RegExp(`\\b(class|def|function|interface|type)\\s+${escapeRegExp(symbol)}\\b`).test(line)) {
+  if (
+    new RegExp(
+      `\\b(class|def|function|interface|type)\\s+${escapeRegExp(symbol)}\\b`,
+    ).test(line)
+  ) {
     return true;
   }
-  if (new RegExp(`\\b(const|let|var)\\s+${escapeRegExp(symbol)}\\b\\s*=\\s*(async\\s*)?(function\\b|\\([^)]*\\)|[$A-Z_a-z][$\\w]*)?\\s*=>`).test(line)) {
+  if (
+    new RegExp(
+      `\\b(const|let|var)\\s+${escapeRegExp(symbol)}\\b\\s*=\\s*(async\\s*)?(function\\b|\\([^)]*\\)|[$A-Z_a-z][$\\w]*)?\\s*=>`,
+    ).test(line)
+  ) {
     return true;
   }
   if (/^\s*\(/.test(after)) {
@@ -712,7 +1598,7 @@ function isClickableSymbol(line: string, symbol: string, startIndex: number): bo
 }
 
 function isInsideString(line: string, index: number): boolean {
-  let quote: "'" | "\"" | "`" | null = null;
+  let quote: "'" | '"' | "`" | null = null;
   let escaped = false;
 
   for (let position = 0; position < index; position += 1) {
@@ -729,7 +1615,7 @@ function isInsideString(line: string, index: number): boolean {
       if (char === quote) quote = null;
       continue;
     }
-    if (char === "'" || char === "\"" || char === "`") {
+    if (char === "'" || char === '"' || char === "`") {
       quote = char;
     }
   }
@@ -754,6 +1640,9 @@ function diffDecorationsForRows(
   monaco: MonacoApi,
   rows: DiffRow[],
   discussions: PullRequestDiscussion[],
+  draftComments: DraftReviewComment[],
+  commentMode: boolean,
+  commentSelection: LineSelection,
 ): Monaco.editor.IModelDeltaDecoration[] {
   return rows.flatMap((row, index) => {
     const lineNumber = index + 1;
@@ -762,8 +1651,34 @@ function diffDecorationsForRows(
     if (row.kind === "added") lineClasses.push("diff-monaco-line-added");
     if (row.kind === "removed") lineClasses.push("diff-monaco-line-removed");
     if (row.kind === "hunk") lineClasses.push("diff-monaco-line-hunk");
-    if (discussions.some((discussion) => discussionAffectsDiffPosition(discussion, diffPosition))) {
+    if (
+      discussions.some((discussion) =>
+        discussionAffectsDiffPosition(discussion, diffPosition),
+      )
+    ) {
       lineClasses.push("diff-monaco-line-comment");
+    }
+    if (
+      row.newLine &&
+      draftComments.some(
+        (comment) =>
+          row.newLine != null &&
+          row.newLine >= comment.startLine &&
+          row.newLine <= comment.endLine,
+      )
+    ) {
+      lineClasses.push("diff-monaco-line-draft-comment");
+    }
+    if (row.newLine && commentMode) {
+      lineClasses.push("diff-monaco-line-commentable");
+    }
+    if (
+      row.newLine &&
+      commentSelection?.file &&
+      row.newLine >= commentSelection.startLine &&
+      row.newLine <= commentSelection.endLine
+    ) {
+      lineClasses.push("diff-monaco-line-selected-comment");
     }
 
     const lineDecoration: Monaco.editor.IModelDeltaDecoration = {
@@ -780,9 +1695,16 @@ function diffDecorationsForRows(
 
     const symbolDecorations = tokenizeCodeLine(displayDiffLine(row))
       .filter((token) => token.kind === "identifier")
-      .filter((token) => isClickableSymbol(displayDiffLine(row), token.text, token.startIndex))
+      .filter((token) =>
+        isClickableSymbol(displayDiffLine(row), token.text, token.startIndex),
+      )
       .map((token) => ({
-        range: new monaco.Range(lineNumber, token.startIndex + 1, lineNumber, token.startIndex + token.text.length + 1),
+        range: new monaco.Range(
+          lineNumber,
+          token.startIndex + 1,
+          lineNumber,
+          token.startIndex + token.text.length + 1,
+        ),
         options: {
           inlineClassName: "context-symbol-token",
         },
@@ -790,6 +1712,15 @@ function diffDecorationsForRows(
 
     return [lineDecoration, ...symbolDecorations];
   });
+}
+
+function newLineFromMouseEvent(
+  event: Monaco.editor.IEditorMouseEvent,
+  rows: DiffRow[],
+): number | null {
+  const position = event.target.position;
+  if (!position) return null;
+  return rows[position.lineNumber - 1]?.newLine ?? null;
 }
 
 function discussionsByPosition(
@@ -921,7 +1852,10 @@ function Welcome() {
     <section className="welcome">
       <GitPullRequest size={36} aria-hidden="true" />
       <h2>Local PR reading, no checkout required.</h2>
-      <p>Load a pull request to inspect metadata, changed files, review discussion, and unified diffs in one focused workspace.</p>
+      <p>
+        Load a pull request to inspect metadata, changed files, review
+        discussion, and unified diffs in one focused workspace.
+      </p>
     </section>
   );
 }
