@@ -10,6 +10,8 @@ import {
   FileCode2,
   GitPullRequest,
   HelpCircle,
+  PanelLeftClose,
+  PanelLeftOpen,
   Loader2,
   Moon,
   MessageSquareText,
@@ -98,6 +100,7 @@ export function App() {
   const [recent, setRecent] = useState<RecentPullRequest[]>([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [symbolContexts, setSymbolContexts] = useState<SymbolContext[]>([]);
@@ -159,6 +162,7 @@ export function App() {
       setSymbolState("idle");
       setSymbolError(null);
       setUrl(nextWorkspace.pullRequest.summary.url);
+      setSidebarCollapsed(true);
       await refreshRecent();
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : String(loadError));
@@ -179,6 +183,7 @@ export function App() {
       setSymbolState("idle");
       setSymbolError(null);
       setUrl(nextWorkspace.pullRequest.summary.url);
+      setSidebarCollapsed(true);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {
@@ -217,14 +222,22 @@ export function App() {
 
   return (
     <main className="app-shell">
-      <header className="topbar">
-        <div className="brand">
-          <GitPullRequest size={22} aria-hidden="true" />
-          <div>
-            <h1>PR Tool</h1>
-            <p>Read GitHub pull requests locally without branch switching.</p>
+      <header className={workspace ? "topbar loaded" : "topbar"}>
+        {workspace ? (
+          <PullRequestHeader
+            workspace={workspace}
+            sidebarCollapsed={sidebarCollapsed}
+            onToggleSidebar={() => setSidebarCollapsed((current) => !current)}
+          />
+        ) : (
+          <div className="brand">
+            <GitPullRequest size={22} aria-hidden="true" />
+            <div>
+              <h1>PR Tool</h1>
+              <p>Read GitHub pull requests locally without branch switching.</p>
+            </div>
           </div>
-        </div>
+        )}
         <form
           className="url-form"
           onSubmit={(event) => {
@@ -259,28 +272,31 @@ export function App() {
 
       {error ? <div className="error-banner">{error}</div> : null}
 
-      <section className="workspace">
-        <aside className="sidebar">
-          <RecentList recent={recent} onOpen={openCached} activeId={workspace?.pullRequest.summary.id ?? null} />
-          {workspace ? (
-            <FileNavigator
-              files={filteredFiles}
-              allFiles={workspace.pullRequest.files}
-              notes={workspace.notes}
-              filter={filter}
-              selectedFile={currentFile?.filename ?? null}
-              onFilter={setFilter}
-              onSelect={setSelectedFile}
-            />
-          ) : (
-            <EmptyPanel />
-          )}
+      <section className={workspace && sidebarCollapsed ? "workspace sidebar-collapsed" : "workspace"}>
+        <aside className="sidebar" aria-hidden={Boolean(workspace && sidebarCollapsed)}>
+          {!workspace || !sidebarCollapsed ? (
+            <>
+              <RecentList recent={recent} onOpen={openCached} activeId={workspace?.pullRequest.summary.id ?? null} />
+              {workspace ? (
+                <FileNavigator
+                  files={filteredFiles}
+                  allFiles={workspace.pullRequest.files}
+                  notes={workspace.notes}
+                  filter={filter}
+                  selectedFile={currentFile?.filename ?? null}
+                  onFilter={setFilter}
+                  onSelect={setSelectedFile}
+                />
+              ) : (
+                <EmptyPanel />
+              )}
+            </>
+          ) : null}
         </aside>
 
         <section className="review-surface">
           {workspace && currentFile ? (
             <>
-              <PullRequestHeader workspace={workspace} />
               <div className={showSymbolSplit ? "review-columns split" : "review-columns"}>
                 <DiffViewer file={currentFile} discussions={workspace.pullRequest.discussions} theme={theme} onOpenSymbol={openSymbolContext} />
                 {showSymbolSplit ? (
@@ -396,10 +412,27 @@ function FileNavigator({
   );
 }
 
-function PullRequestHeader({ workspace }: { workspace: ReviewWorkspace }) {
+function PullRequestHeader({
+  workspace,
+  sidebarCollapsed,
+  onToggleSidebar,
+}: {
+  workspace: ReviewWorkspace;
+  sidebarCollapsed: boolean;
+  onToggleSidebar: () => void;
+}) {
   const { summary } = workspace.pullRequest;
   return (
     <section className="pr-header">
+      <button
+        type="button"
+        className="icon-button sidebar-toggle"
+        aria-label={sidebarCollapsed ? "Show pull request sidebar" : "Hide pull request sidebar"}
+        title={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+        onClick={onToggleSidebar}
+      >
+        {sidebarCollapsed ? <PanelLeftOpen size={16} aria-hidden="true" /> : <PanelLeftClose size={16} aria-hidden="true" />}
+      </button>
       <div>
         <div className="eyebrow">{summary.owner}/{summary.repo}#{summary.number}</div>
         <h2>{summary.title}</h2>
