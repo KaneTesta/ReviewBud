@@ -1,31 +1,8 @@
 import type { DiffRow, SymbolContext, SymbolContextRequest } from "./types";
 
-export type CodeLineToken = { kind: "identifier" | "text"; text: string; startIndex: number };
+type CodeLineToken = { kind: "identifier" | "text"; text: string; startIndex: number };
 
 const identifierPattern = /[$A-Z_a-z][$\w]*/g;
-const ignoredIdentifiers = new Set([
-  "as",
-  "async",
-  "await",
-  "const",
-  "default",
-  "else",
-  "export",
-  "false",
-  "for",
-  "from",
-  "function",
-  "if",
-  "import",
-  "in",
-  "let",
-  "new",
-  "null",
-  "return",
-  "true",
-  "type",
-  "undefined",
-]);
 
 export function buildDiffRows(patch: string): DiffRow[] {
   let oldLine = 0;
@@ -74,15 +51,6 @@ export function tokenizeCodeLine(line: string): CodeLineToken[] {
   return tokens.length > 0 ? tokens : [{ kind: "text", text: line, startIndex: 0 }];
 }
 
-export function inferIdentifier(line: string): string | null {
-  const identifiers = tokenizeCodeLine(line)
-    .filter((token) => token.kind === "identifier")
-    .map((token) => token.text)
-    .filter((token) => !ignoredIdentifiers.has(token));
-
-  return identifiers.find((token) => /^[A-Z_a-z$]/.test(token)) ?? null;
-}
-
 type LocalSymbolContextRequest = Pick<SymbolContextRequest, "file" | "line" | "symbol">;
 
 export function extractSymbolContext(source: string, request: LocalSymbolContextRequest): SymbolContext {
@@ -118,6 +86,7 @@ function findBoundaryStart(lines: string[], targetIndex: number, symbol: string)
 function isImplementationBoundary(line: string, symbol: string): boolean {
   const escaped = escapeRegExp(symbol);
   return [
+    new RegExp(`^\\s*(async\\s+)?def\\s+${escaped}\\s*\\(`),
     new RegExp(`\\b(function|class|interface|type)\\s+${escaped}\\b`),
     new RegExp(`\\b(function|class|interface|type)\\s+[$A-Z_a-z][$\\w]*\\b`),
     new RegExp(`\\b(const|let|var)\\s+${escaped}\\b\\s*=\\s*(async\\s*)?(function\\b|\\([^)]*\\)|[$A-Z_a-z][$\\w]*)?\\s*=>`),
@@ -127,6 +96,11 @@ function isImplementationBoundary(line: string, symbol: string): boolean {
 }
 
 function findBoundaryEnd(lines: string[], startIndex: number): number {
+  const pythonBoundaryEnd = findPythonBoundaryEnd(lines, startIndex);
+  if (pythonBoundaryEnd != null) {
+    return pythonBoundaryEnd;
+  }
+
   let depth = 0;
   let sawBrace = false;
 
@@ -148,6 +122,42 @@ function findBoundaryEnd(lines: string[], startIndex: number): number {
   return Math.min(lines.length - 1, startIndex + 24);
 }
 
+function findPythonBoundaryEnd(lines: string[], startIndex: number): number | null {
+  if (!/^\s*(async\s+)?def\s+[$A-Z_a-z][$\w]*\s*\(/.test(lines[startIndex])) {
+    return null;
+  }
+
+  const startIndent = indentationLength(lines[startIndex]);
+  let endIndex = startIndex;
+  let signatureComplete = lines[startIndex].trimEnd().endsWith(":");
+
+  for (let index = startIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line.trim() === "") {
+      endIndex = index;
+      continue;
+    }
+
+    if (!signatureComplete) {
+      endIndex = index;
+      signatureComplete = line.trimEnd().endsWith(":");
+      continue;
+    }
+
+    if (indentationLength(line) <= startIndent) {
+      return endIndex;
+    }
+
+    endIndex = index;
+  }
+
+  return endIndex;
+}
+
+function indentationLength(line: string): number {
+  return line.match(/^\s*/)?.[0].length ?? 0;
+}
+
 function buildFallbackContext(lines: string[], request: LocalSymbolContextRequest, targetIndex: number): SymbolContext {
   const startIndex = Math.max(0, targetIndex - 8);
   const endIndex = Math.min(lines.length - 1, targetIndex + 8);
@@ -162,6 +172,9 @@ function buildFallbackContext(lines: string[], request: LocalSymbolContextReques
 }
 
 function inferTitle(line: string, fallback: string): string {
+  const pythonDef = line.match(/^\s*(?:async\s+)?def\s+([$A-Z_a-z][$\w]*)\s*\(/);
+  if (pythonDef) return pythonDef[1];
+
   const named = line.match(/\b(?:function|class|interface|type)\s+([$A-Z_a-z][$\w]*)\b/);
   if (named) return named[1];
 

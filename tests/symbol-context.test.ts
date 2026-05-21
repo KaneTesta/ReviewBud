@@ -3,7 +3,6 @@ import { describe, it } from "node:test";
 import {
   buildDiffRows,
   extractSymbolContext,
-  inferIdentifier,
   tokenizeCodeLine,
 } from "../src/shared/symbol-context";
 
@@ -34,12 +33,6 @@ describe("tokenizeCodeLine", () => {
       ["export", "function", "loadPullRequest", "url", "string"],
     );
     assert.equal(tokens.find((token) => token.text === "loadPullRequest")?.startIndex, 17);
-  });
-});
-
-describe("inferIdentifier", () => {
-  it("picks the strongest identifier from a diff line", () => {
-    assert.equal(inferIdentifier("+  const selectedFile = loadPullRequest(url);"), "selectedFile");
   });
 });
 
@@ -81,5 +74,34 @@ describe("extractSymbolContext", () => {
 
     assert.equal(context.startLine, 7);
     assert.equal(context.endLine, 23);
+  });
+
+  it("returns a full Python async function body", () => {
+    const source = [
+      "async def load_from_cache(",
+      "    *,",
+      "    redis_client,",
+      "):",
+      "    cached = await safe_get(redis_client)",
+      "    if not cached:",
+      "        return None",
+      "    return cached",
+      "",
+      "",
+      "async def other():",
+      "    return None",
+    ].join("\n");
+
+    const context = extractSymbolContext(source, {
+      file: "app/cache.py",
+      symbol: "load_from_cache",
+      line: 1,
+    });
+
+    assert.equal(context.title, "load_from_cache");
+    assert.equal(context.startLine, 1);
+    assert.equal(context.endLine, 10);
+    assert.match(context.code, /return cached/);
+    assert.doesNotMatch(context.code, /async def other/);
   });
 });

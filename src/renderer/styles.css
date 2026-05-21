@@ -36,6 +36,7 @@ body {
   margin: 0;
   min-width: 1080px;
   min-height: 720px;
+  overflow: hidden;
   background: var(--canvas);
 }
 
@@ -62,7 +63,9 @@ a:focus-visible {
 .app-shell {
   display: grid;
   grid-template-rows: auto auto 1fr;
+  height: 100vh;
   min-height: 100vh;
+  overflow: hidden;
   background: var(--canvas);
 }
 
@@ -184,6 +187,7 @@ a:focus-visible {
   display: grid;
   grid-template-columns: 330px minmax(430px, 1fr);
   min-height: 0;
+  overflow: hidden;
 }
 
 .sidebar {
@@ -485,6 +489,11 @@ a:focus-visible {
 .review-columns.split .symbol-context {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
+  position: sticky;
+  top: 0;
+  align-self: start;
+  height: 100%;
+  max-height: 100%;
   border-bottom: 0;
   background: var(--canvas);
 }
@@ -529,52 +538,56 @@ a:focus-visible {
   line-height: 1.5;
 }
 
-.diff-line {
-  display: block;
-  min-height: 18px;
-  padding: 0 14px;
-  white-space: pre;
+.diff-editor {
+  overflow: hidden;
+  background: var(--canvas);
 }
 
-.code-token {
-  display: inline;
-  border: 0;
-  border-radius: 4px;
-  padding: 0;
-  background: transparent;
-  color: inherit;
-  font-family: inherit;
-  font-size: inherit;
-  line-height: inherit;
+.diff-editor-stack {
+  position: relative;
+  min-width: max-content;
 }
 
-.code-token:hover {
-  color: var(--primary-hover);
+.diff-editor .monaco-editor,
+.diff-editor .monaco-editor-background,
+.diff-editor .monaco-editor .margin {
+  background: var(--canvas);
 }
 
-.code-token:focus-visible {
-  outline-offset: 1px;
-}
-
-.diff-line.added {
+.diff-editor .diff-monaco-line-added {
   background: color-mix(in srgb, var(--success) 14%, transparent);
-  color: #bde9cb;
 }
 
-.diff-line.removed {
+.diff-editor .diff-monaco-line-removed {
   background: rgb(208 138 131 / 0.12);
-  color: #efc6c1;
 }
 
-.diff-line.hunk {
+.diff-editor .diff-monaco-line-hunk {
   background: var(--surface-3);
   color: var(--primary-hover);
 }
 
-.diff-line.comment-highlight {
+.diff-editor .diff-monaco-line-comment {
   background: rgb(245 202 66 / 0.26);
-  color: #f8e7a0;
   box-shadow: inset 3px 0 0 rgb(245 202 66 / 0.9);
+}
+
+.diff-discussion-overlay {
+  position: absolute;
+  inset: 0 0 auto 0;
+  pointer-events: none;
+}
+
+.diff-discussion-anchor {
+  position: absolute;
+  left: 64px;
+  right: 14px;
+  z-index: 2;
+  pointer-events: auto;
+}
+
+.diff-discussion-anchor .inline-discussions {
+  padding-top: 0;
 }
 
 .symbol-context {
@@ -601,8 +614,16 @@ a:focus-visible {
   border-top: 1px solid var(--hairline);
 }
 
+.context-entry-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
 .context-title {
   display: grid;
+  min-width: 0;
   gap: 4px;
 }
 
@@ -624,35 +645,28 @@ a:focus-visible {
   font-size: 12px;
 }
 
-.context-code {
-  overflow: auto;
-  margin: 0;
+.context-editor {
+  overflow: hidden;
   border: 1px solid var(--hairline);
-  border-radius: 12px;
+  border-radius: 8px;
   background: var(--canvas);
-  color: var(--ink-muted);
-  font-family: var(--mono);
-  font-size: 12px;
-  line-height: 1.5;
 }
 
-.context-code > span {
-  display: grid;
-  grid-template-columns: 42px minmax(0, 1fr);
-  min-width: max-content;
+.context-editor .monaco-editor,
+.context-editor .monaco-editor-background,
+.context-editor .monaco-editor .margin {
+  background: var(--canvas);
 }
 
-.context-line-number {
-  padding: 0 10px;
-  border-right: 1px solid var(--hairline);
-  color: var(--ink-tertiary);
-  text-align: right;
-  user-select: none;
+.context-editor .context-symbol-token,
+.diff-editor .context-symbol-token {
+  border-radius: 4px;
+  cursor: pointer;
 }
 
-.context-code > span > span:last-child {
-  padding: 0 10px;
-  white-space: pre;
+.context-editor .context-symbol-token:hover,
+.diff-editor .context-symbol-token:hover {
+  color: var(--primary-hover);
 }
 
 .context-error {
@@ -709,7 +723,7 @@ a:focus-visible {
   border-bottom: 1px solid var(--hairline);
 }
 
-.discussion-collapsed p {
+.discussion-collapsed .discussion-markdown {
   padding: 0 12px 12px;
 }
 
@@ -740,12 +754,90 @@ a:focus-visible {
   font-weight: 500;
 }
 
-.discussion p {
+.discussion-markdown {
   margin: 6px 0 0;
   color: var(--ink-subtle);
   font-size: 13px;
   line-height: 1.5;
-  white-space: pre-wrap;
+}
+
+.discussion-markdown > :first-child {
+  margin-top: 0;
+}
+
+.discussion-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.discussion-markdown p,
+.discussion-markdown ul,
+.discussion-markdown ol,
+.discussion-markdown blockquote,
+.discussion-markdown pre,
+.discussion-markdown table {
+  margin: 8px 0 0;
+}
+
+.discussion-markdown ul,
+.discussion-markdown ol {
+  padding-left: 20px;
+}
+
+.discussion-markdown li + li {
+  margin-top: 4px;
+}
+
+.discussion-markdown code {
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  padding: 1px 4px;
+  background: var(--surface-3);
+  color: var(--ink-muted);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.discussion-markdown pre {
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--canvas);
+}
+
+.discussion-markdown pre code {
+  display: block;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  white-space: pre;
+}
+
+.discussion-markdown blockquote {
+  padding-left: 10px;
+  border-left: 3px solid var(--hairline-strong);
+  color: var(--ink-tertiary);
+}
+
+.discussion-markdown a {
+  color: var(--primary-hover);
+}
+
+.discussion-markdown table {
+  display: block;
+  overflow: auto;
+  border-spacing: 0;
+  border-collapse: collapse;
+}
+
+.discussion-markdown th,
+.discussion-markdown td {
+  padding: 6px 8px;
+  border: 1px solid var(--hairline);
+}
+
+.discussion-markdown input[type="checkbox"] {
+  margin-right: 6px;
 }
 
 .empty-panel,

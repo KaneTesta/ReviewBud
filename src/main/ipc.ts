@@ -2,7 +2,7 @@ import { app, ipcMain } from "electron";
 import { fetchPullRequest, fetchSymbolContext } from "./github.js";
 import { ReviewStorage } from "./storage.js";
 import { parsePullRequestUrl } from "../shared/pr-url.js";
-import type { ReviewNote, SymbolContextRequest } from "../shared/types.js";
+import type { SymbolContextRequest } from "../shared/types.js";
 
 export function registerIpcHandlers(): void {
   const storage = new ReviewStorage(app.getPath("userData"));
@@ -16,8 +16,6 @@ export function registerIpcHandlers(): void {
   ipcMain.handle("pr:listRecent", async () => storage.listRecent());
 
   ipcMain.handle("pr:openCached", async (_event, id: string) => storage.loadWorkspace(id));
-
-  ipcMain.handle("pr:saveNotes", async (_event, id: string, notes: ReviewNote[]) => storage.saveNotes(id, notes));
 
   ipcMain.handle("pr:symbolContext", async (_event, request: SymbolContextRequest) =>
     fetchSymbolContext(request, app.getPath("userData")),

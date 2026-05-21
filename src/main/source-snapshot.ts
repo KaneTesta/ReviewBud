@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-export interface SourceSnapshotRequest {
+interface SourceSnapshotRequest {
   userDataPath: string;
   repositoryFullName: string;
   headSha: string;

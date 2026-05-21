@@ -1,7 +1,6 @@
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { CachedPullRequest, RecentPullRequest, ReviewNote, ReviewWorkspace } from "../shared/types.js";
-import { pullRequestId } from "../shared/pr-url.js";
 
 export class ReviewStorage {
   private readonly cacheDir: string;
@@ -19,13 +18,6 @@ export class ReviewStorage {
 
     await writeFile(this.workspacePath(id), JSON.stringify(workspace, null, 2), "utf8");
     return workspace;
-  }
-
-  async saveNotes(id: string, notes: ReviewNote[]): Promise<ReviewNote[]> {
-    const workspace = await this.loadWorkspace(id);
-    const nextWorkspace = { ...workspace, notes };
-    await writeFile(this.workspacePath(id), JSON.stringify(nextWorkspace, null, 2), "utf8");
-    return notes;
   }
 
   async loadWorkspace(id: string): Promise<ReviewWorkspace> {
@@ -83,8 +75,4 @@ function sanitizeId(id: string): string {
 function mergeNotes(existing: ReviewNote[], filenames: string[]): ReviewNote[] {
   const byFile = new Map(existing.map((note) => [note.file, note]));
   return filenames.map((filename) => byFile.get(filename) ?? { file: filename, status: "unread", note: "" });
-}
-
-export function idFromParts(owner: string, repo: string, number: number): string {
-  return pullRequestId({ owner, repo, number });
 }

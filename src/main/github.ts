@@ -13,6 +13,7 @@ import { pullRequestId } from "../shared/pr-url.js";
 import { extractSymbolContext } from "../shared/symbol-context.js";
 import { ensureSourceSnapshot } from "./source-snapshot.js";
 import { resolveTypeScriptSymbolContext } from "./typescript-intelligence.js";
+import { resolvePythonSymbolContextWithLsp } from "./python-lsp.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -173,6 +174,10 @@ export async function fetchSymbolContext(request: SymbolContextRequest, userData
     const context = await resolveTypeScriptSymbolContext(snapshotPath, request);
     if (context) {
       return context;
+    }
+    const pythonContext = await resolvePythonSymbolContextWithLsp(snapshotPath, request);
+    if (pythonContext) {
+      return pythonContext;
     }
   } catch {
     // Raw GitHub file context below keeps Cmd-click useful even when a repo cannot be hydrated locally.

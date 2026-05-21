@@ -1,4 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type * as Monaco from "monaco-editor";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   CheckCircle2,
   Circle,
@@ -19,6 +22,7 @@ import type {
   ReviewNote,
   ReviewWorkspace,
   SymbolContext,
+  DiffRow,
 } from "../../shared/types";
 import {
   discussionAffectsDiffPosition,
@@ -29,6 +33,19 @@ import {
 import { buildDiffRows, tokenizeCodeLine } from "../../shared/symbol-context";
 
 const defaultUrl = "";
+const monacoTheme = "pr-tool-dark";
+let monacoThemeDefined = false;
+type MonacoApi = typeof import("monaco-editor/esm/vs/editor/editor.api.js");
+
+function loadMonaco(): Promise<MonacoApi> {
+  return Promise.all([
+    import("monaco-editor/esm/vs/editor/editor.api.js"),
+    import("monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution.js"),
+    import("monaco-editor/esm/vs/basic-languages/python/python.contribution.js"),
+    import("monaco-editor/esm/vs/basic-languages/typescript/typescript.contribution.js"),
+    import("monaco-editor/min/vs/editor/editor.main.css"),
+  ]).then(([monaco]) => monaco);
+}
 
 export function App() {
   const [url, setUrl] = useState(defaultUrl);
@@ -64,6 +81,14 @@ export function App() {
     setSymbolContexts([]);
     setSymbolState("idle");
     setSymbolError(null);
+  }
+
+  function closeSymbolContextAt(index: number) {
+    setSymbolContexts((current) => current.filter((_, contextIndex) => contextIndex !== index));
+    setSymbolError(null);
+    if (symbolState === "error") {
+      setSymbolState("idle");
+    }
   }
 
   async function refreshRecent() {
@@ -200,6 +225,7 @@ export function App() {
                     state={symbolState}
                     error={symbolError}
                     onClose={closeSymbolContext}
+                    onCloseContext={closeSymbolContextAt}
                     onOpenSymbol={(file, line, column, symbol) => openSymbolContext(file, line, column, symbol, true)}
                   />
                 ) : null}
@@ -332,10 +358,10 @@ function DiffViewer({
   discussions: PullRequestDiscussion[];
   onOpenSymbol: (file: string, line: number, column: number, symbol: string) => void;
 }) {
-  const rows = buildDiffRows(file.patch || "Diff omitted by GitHub API for this file.");
-  const fileDiscussions = discussionsForFile(discussions, file.filename);
-  const topDiscussions = fileDiscussions.filter((discussion) => !discussion.position);
-  const [hoveredDiscussion, setHoveredDiscussion] = useState<PullRequestDiscussion | null>(null);
+  const rows = useMemo(() => buildDiffRows(file.patch || "Diff omitted by GitHub API for this file."), [file.patch]);
+  const fileDiscussions = useMemo(() => discussionsForFile(discussions, file.filename), [discussions, file.filename]);
+  const topDiscussions = useMemo(() => fileDiscussions.filter((discussion) => !discussion.position), [fileDiscussions]);
+  const lineDiscussions = useMemo(() => fileDiscussions.filter((discussion) => discussion.position), [fileDiscussions]);
 
   return (
     <section className="diff-panel">
@@ -348,46 +374,135 @@ function DiffViewer({
       </div>
       <div className="diff" role="region" aria-label={`Diff for ${file.filename}`}>
         {topDiscussions.length > 0 ? <InlineDiscussions discussions={topDiscussions} /> : null}
-        {rows.map((row, index) => {
-          const diffPosition = index + 1;
-          const rowDiscussions = fileDiscussions.filter((discussion) => discussionAffectsDiffPosition(discussion, diffPosition));
-          const isHighlighted = hoveredDiscussion
-            ? discussionAffectsDiffPosition(hoveredDiscussion, diffPosition)
-            : false;
-          return (
-            <div key={`${index}-${row.text.slice(0, 20)}`}>
-              <span className={diffLineClass(row.text, isHighlighted)}>
-                {tokenizeCodeLine(row.text || " ").map((token, tokenIndex) =>
-                  token.kind === "identifier" && row.newLine ? (
-                    <button
-                      key={`${tokenIndex}-${token.text}`}
-                      type="button"
-                      className="code-token"
-                      title={`Cmd-click to inspect ${token.text}`}
-                      onClick={(event) => {
-                        if (!event.metaKey && !event.ctrlKey) return;
-                        event.preventDefault();
-                        onOpenSymbol(file.filename, row.newLine!, Math.max(1, token.startIndex), token.text);
-                      }}
-                    >
-                      {token.text}
-                    </button>
-                  ) : (
-                    <span key={`${tokenIndex}-${token.text}`}>{token.text}</span>
-                  ),
-                )}
-              </span>
-              {rowDiscussions.length > 0 ? (
-                <InlineDiscussions
-                  discussions={rowDiscussions}
-                  onHoverDiscussion={setHoveredDiscussion}
-                />
-              ) : null}
-            </div>
-          );
-        })}
+        <DiffCodeEditor file={file} rows={rows} discussions={lineDiscussions} onOpenSymbol={onOpenSymbol} />
       </div>
     </section>
+  );
+}
+
+function DiffCodeEditor({
+  file,
+  rows,
+  discussions,
+  onOpenSymbol,
+}: {
+  file: PullRequestFile;
+  rows: DiffRow[];
+  discussions: PullRequestDiscussion[];
+  onOpenSymbol: (file: string, line: number, column: number, symbol: string) => void;
+}) {
+  const editorElementRef = useRef<HTMLDivElement | null>(null);
+  const onOpenSymbolRef = useRef(onOpenSymbol);
+  const editorModel = useMemo(() => buildDiffEditorModel(rows), [rows]);
+  const editorHeight = Math.max(240, editorModel.lines.length * 18 + 16);
+
+  useEffect(() => {
+    onOpenSymbolRef.current = onOpenSymbol;
+  }, [onOpenSymbol]);
+
+  useEffect(() => {
+    const editorElement = editorElementRef.current;
+    if (!editorElement) return;
+    let disposed = false;
+    let cleanup = () => {};
+
+    void (async () => {
+      const monaco = await loadMonaco();
+      if (disposed) return;
+
+      defineMonacoTheme(monaco);
+
+      const model = monaco.editor.createModel(editorModel.source, languageForFile(file.filename));
+      const editor = monaco.editor.create(editorElement, {
+        model,
+        readOnly: true,
+        domReadOnly: true,
+        automaticLayout: true,
+        theme: monacoTheme,
+        fontFamily: "var(--mono)",
+        fontSize: 12,
+        lineHeight: 18,
+        minimap: { enabled: false },
+        folding: true,
+        showFoldingControls: "always",
+        scrollbar: {
+          alwaysConsumeMouseWheel: false,
+          horizontalScrollbarSize: 10,
+          verticalScrollbarSize: 10,
+        },
+        overviewRulerLanes: 0,
+        renderLineHighlight: "none",
+        scrollBeyondLastLine: false,
+        stickyScroll: { enabled: false },
+        wordWrap: "off",
+        lineNumbers: (lineNumber: number) => editorModel.lineNumbers[lineNumber - 1] ?? "",
+        padding: { top: 8, bottom: 8 },
+      });
+      const diffDecorations = editor.createDecorationsCollection(
+        diffDecorationsForRows(monaco, editorModel.rows, discussions),
+      );
+
+      const clickDisposable = editor.onMouseDown((event: Monaco.editor.IEditorMouseEvent) => {
+        if (!event.event.metaKey && !event.event.ctrlKey) return;
+        const position = event.target.position;
+        if (!position) return;
+        const row = editorModel.rows[position.lineNumber - 1];
+        if (!row?.newLine) return;
+        const word = model.getWordAtPosition(position);
+        if (!word) return;
+        event.event.preventDefault();
+        onOpenSymbolRef.current(file.filename, row.newLine, position.column, word.word);
+      });
+
+      cleanup = () => {
+        clickDisposable.dispose();
+        diffDecorations.clear();
+        editor.dispose();
+        model.dispose();
+      };
+    })();
+
+    return () => {
+      disposed = true;
+      cleanup();
+    };
+  }, [discussions, editorModel, file.filename]);
+
+  return (
+    <div className="diff-editor-stack">
+      <div
+        ref={editorElementRef}
+        className="diff-editor"
+        style={{ height: `${editorHeight}px` }}
+        aria-label={`${file.filename} diff`}
+      />
+      <DiffDiscussionOverlay discussions={discussions} rows={editorModel.rows} />
+    </div>
+  );
+}
+
+function DiffDiscussionOverlay({
+  discussions,
+  rows,
+}: {
+  discussions: PullRequestDiscussion[];
+  rows: DiffRow[];
+}) {
+  const groups = discussionsByPosition(discussions, rows.length);
+  if (groups.length === 0) return null;
+
+  return (
+    <div className="diff-discussion-overlay" aria-hidden="true">
+      {groups.map(({ position, discussions: group }) => (
+        <div
+          key={position}
+          className="diff-discussion-anchor"
+          style={{ top: `${position * 18 + 8}px` }}
+        >
+          <InlineDiscussions discussions={group} />
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -396,12 +511,14 @@ function SymbolContextPanel({
   state,
   error,
   onClose,
+  onCloseContext,
   onOpenSymbol,
 }: {
   contexts: SymbolContext[];
   state: "idle" | "loading" | "error";
   error: string | null;
   onClose: () => void;
+  onCloseContext: (index: number) => void;
   onOpenSymbol: (file: string, line: number, column: number, symbol: string) => void;
 }) {
   const latestContext = contexts.at(-1) ?? null;
@@ -415,7 +532,7 @@ function SymbolContextPanel({
             {state === "loading"
               ? "Loading"
               : latestContext
-                ? latestContext.source === "language-service"
+                ? latestContext.source === "language-service" || latestContext.source === "language-server"
                   ? "Definition"
                   : `${latestContext.startLine}-${latestContext.endLine}`
                 : "Cmd-click"}
@@ -430,41 +547,22 @@ function SymbolContextPanel({
         <div className="context-stack">
           {contexts.map((context, contextIndex) => (
             <article className="context-entry" key={`${context.file}-${context.startLine}-${context.symbol}-${contextIndex}`}>
-              <div className="context-title">
-                <strong>{context.title}</strong>
-                <span>{context.file} · lines {context.startLine}-{context.endLine}</span>
+              <div className="context-entry-heading">
+                <div className="context-title">
+                  <strong>{context.title}</strong>
+                  <span>{context.file} · lines {context.startLine}-{context.endLine}</span>
+                </div>
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label={`Close ${context.title} context`}
+                  title={`Close ${context.title} context`}
+                  onClick={() => onCloseContext(contextIndex)}
+                >
+                  <X size={14} aria-hidden="true" />
+                </button>
               </div>
-              <pre className="context-code">
-                {context.code.split("\n").map((line, index) => {
-                  const lineNumber = context.startLine + index;
-                  return (
-                    <span key={`${lineNumber}-${line}`}>
-                      <span className="context-line-number">{lineNumber}</span>
-                      <span>
-                        {tokenizeCodeLine(line || " ").map((token, tokenIndex) =>
-                          token.kind === "identifier" ? (
-                            <button
-                              key={`${tokenIndex}-${token.text}`}
-                              type="button"
-                              className="code-token"
-                              title={`Cmd-click to inspect ${token.text}`}
-                              onClick={(event) => {
-                                if (!event.metaKey && !event.ctrlKey) return;
-                                event.preventDefault();
-                                onOpenSymbol(context.file, lineNumber, token.startIndex + 1, token.text);
-                              }}
-                            >
-                              {token.text}
-                            </button>
-                          ) : (
-                            <span key={`${tokenIndex}-${token.text}`}>{token.text}</span>
-                          ),
-                        )}
-                      </span>
-                    </span>
-                  );
-                })}
-              </pre>
+              <ContextCodeEditor context={context} onOpenSymbol={onOpenSymbol} />
             </article>
           ))}
         </div>
@@ -473,6 +571,214 @@ function SymbolContextPanel({
       ) : null}
     </section>
   );
+}
+
+function ContextCodeEditor({
+  context,
+  onOpenSymbol,
+}: {
+  context: SymbolContext;
+  onOpenSymbol: (file: string, line: number, column: number, symbol: string) => void;
+}) {
+  const editorElementRef = useRef<HTMLDivElement | null>(null);
+  const onOpenSymbolRef = useRef(onOpenSymbol);
+  const lineCount = context.code.split("\n").length;
+  const editorHeight = Math.min(420, Math.max(96, lineCount * 18 + 16));
+
+  useEffect(() => {
+    onOpenSymbolRef.current = onOpenSymbol;
+  }, [onOpenSymbol]);
+
+  useEffect(() => {
+    const editorElement = editorElementRef.current;
+    if (!editorElement) return;
+    let disposed = false;
+    let cleanup = () => {};
+
+    void (async () => {
+      const monaco = await loadMonaco();
+      if (disposed) return;
+
+      defineMonacoTheme(monaco);
+
+      const model = monaco.editor.createModel(
+        context.code,
+        languageForFile(context.file),
+      );
+      const editor = monaco.editor.create(editorElement, {
+        model,
+        readOnly: true,
+        domReadOnly: true,
+        automaticLayout: true,
+        theme: monacoTheme,
+        fontFamily: "var(--mono)",
+        fontSize: 12,
+        lineHeight: 18,
+        minimap: { enabled: false },
+        scrollbar: {
+          alwaysConsumeMouseWheel: false,
+          horizontalScrollbarSize: 10,
+          verticalScrollbarSize: 10,
+        },
+        overviewRulerLanes: 0,
+        renderLineHighlight: "none",
+        scrollBeyondLastLine: false,
+        stickyScroll: { enabled: false },
+        wordWrap: "off",
+        lineNumbers: (lineNumber: number) => String(context.startLine + lineNumber - 1),
+        padding: { top: 8, bottom: 8 },
+      });
+      const symbolDecorations = editor.createDecorationsCollection(symbolDecorationsForContext(monaco, context));
+
+      const clickDisposable = editor.onMouseDown((event: Monaco.editor.IEditorMouseEvent) => {
+        if (!event.event.metaKey && !event.event.ctrlKey) return;
+        const position = event.target.position;
+        if (!position) return;
+        const word = model.getWordAtPosition(position);
+        if (!word) return;
+        event.event.preventDefault();
+        onOpenSymbolRef.current(context.file, context.startLine + position.lineNumber - 1, position.column, word.word);
+      });
+
+      cleanup = () => {
+        clickDisposable.dispose();
+        symbolDecorations.clear();
+        editor.dispose();
+        model.dispose();
+      };
+    })();
+
+    return () => {
+      disposed = true;
+      cleanup();
+    };
+  }, [context]);
+
+  return (
+    <div
+      ref={editorElementRef}
+      className="context-editor"
+      style={{ height: `${editorHeight}px` }}
+      aria-label={`${context.title} source context`}
+    />
+  );
+}
+
+function symbolDecorationsForContext(monaco: MonacoApi, context: SymbolContext): Monaco.editor.IModelDeltaDecoration[] {
+  return context.code.split("\n").flatMap((line, lineIndex) =>
+    tokenizeCodeLine(line)
+      .filter((token) => token.kind === "identifier")
+      .map((token) => ({
+        range: new monaco.Range(lineIndex + 1, token.startIndex + 1, lineIndex + 1, token.startIndex + token.text.length + 1),
+        options: {
+          inlineClassName: "context-symbol-token",
+        },
+      })),
+  );
+}
+
+function defineMonacoTheme(monaco: MonacoApi) {
+  if (monacoThemeDefined) return;
+  monaco.editor.defineTheme(monacoTheme, {
+    base: "vs-dark",
+    inherit: true,
+    rules: [],
+    colors: {
+      "editor.background": "#0e1117",
+      "editor.foreground": "#cdd7e3",
+      "editorLineNumber.foreground": "#718096",
+      "editorLineNumber.activeForeground": "#a5b4c4",
+      "editorCursor.foreground": "#93c5fd",
+      "editor.selectionBackground": "#264f78",
+      "editorIndentGuide.background1": "#202938",
+    },
+  });
+  monacoThemeDefined = true;
+}
+
+function languageForFile(file: string): string {
+  if (/\.py$/.test(file)) return "python";
+  if (/\.(tsx|ts|mts|cts)$/.test(file)) return "typescript";
+  if (/\.(jsx|js|mjs|cjs)$/.test(file)) return "javascript";
+  return "plaintext";
+}
+
+function buildDiffEditorModel(rows: DiffRow[]): { source: string; lines: string[]; lineNumbers: string[]; rows: DiffRow[] } {
+  const lines = rows.map((row) => displayDiffLine(row));
+  return {
+    source: lines.join("\n"),
+    lines,
+    lineNumbers: rows.map((row) => {
+      if (row.newLine) return String(row.newLine);
+      if (row.oldLine) return String(row.oldLine);
+      return "";
+    }),
+    rows,
+  };
+}
+
+function displayDiffLine(row: DiffRow): string {
+  if (row.kind === "hunk") return row.text;
+  if (/^[ +\-]/.test(row.text)) return row.text.slice(1);
+  return row.text;
+}
+
+function diffDecorationsForRows(
+  monaco: MonacoApi,
+  rows: DiffRow[],
+  discussions: PullRequestDiscussion[],
+): Monaco.editor.IModelDeltaDecoration[] {
+  return rows.flatMap((row, index) => {
+    const lineNumber = index + 1;
+    const diffPosition = index + 1;
+    const lineClasses = ["diff-monaco-line"];
+    if (row.kind === "added") lineClasses.push("diff-monaco-line-added");
+    if (row.kind === "removed") lineClasses.push("diff-monaco-line-removed");
+    if (row.kind === "hunk") lineClasses.push("diff-monaco-line-hunk");
+    if (discussions.some((discussion) => discussionAffectsDiffPosition(discussion, diffPosition))) {
+      lineClasses.push("diff-monaco-line-comment");
+    }
+
+    const lineDecoration: Monaco.editor.IModelDeltaDecoration = {
+      range: new monaco.Range(lineNumber, 1, lineNumber, 1),
+      options: {
+        isWholeLine: true,
+        className: lineClasses.join(" "),
+      },
+    };
+
+    if (!row.newLine) {
+      return [lineDecoration];
+    }
+
+    const symbolDecorations = tokenizeCodeLine(displayDiffLine(row))
+      .filter((token) => token.kind === "identifier")
+      .map((token) => ({
+        range: new monaco.Range(lineNumber, token.startIndex + 1, lineNumber, token.startIndex + token.text.length + 1),
+        options: {
+          inlineClassName: "context-symbol-token",
+        },
+      }));
+
+    return [lineDecoration, ...symbolDecorations];
+  });
+}
+
+function discussionsByPosition(
+  discussions: PullRequestDiscussion[],
+  rowCount: number,
+): Array<{ position: number; discussions: PullRequestDiscussion[] }> {
+  const grouped = new Map<number, PullRequestDiscussion[]>();
+
+  for (const discussion of discussions) {
+    if (!discussion.position) continue;
+    const position = Math.max(1, Math.min(rowCount, discussion.position));
+    grouped.set(position, [...(grouped.get(position) ?? []), discussion]);
+  }
+
+  return [...grouped.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([position, group]) => ({ position, discussions: group }));
 }
 
 function InlineDiscussions({
@@ -512,7 +818,7 @@ function InlineDiscussions({
             onBlur={() => onHoverDiscussion?.(null)}
           >
             <summary>{heading}</summary>
-            <p>{discussion.body}</p>
+            <MarkdownBody body={discussion.body} />
           </details>
         ) : (
           <article
@@ -524,10 +830,30 @@ function InlineDiscussions({
             onBlur={() => onHoverDiscussion?.(null)}
           >
             {heading}
-            <p>{discussion.body}</p>
+            <MarkdownBody body={discussion.body} />
           </article>
         );
       })}
+    </div>
+  );
+}
+
+function MarkdownBody({ body }: { body: string }) {
+  return (
+    <div className="discussion-markdown">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        skipHtml
+        components={{
+          a: ({ children, href }) => (
+            <a href={href} target="_blank" rel="noreferrer">
+              {children}
+            </a>
+          ),
+        }}
+      >
+        {body}
+      </ReactMarkdown>
     </div>
   );
 }
@@ -549,13 +875,4 @@ function Welcome() {
       <p>Load a pull request to inspect metadata, changed files, review discussion, and unified diffs in one focused workspace.</p>
     </section>
   );
-}
-
-function diffLineClass(line: string, isHighlighted = false): string {
-  const classes = ["diff-line"];
-  if (line.startsWith("+") && !line.startsWith("+++")) classes.push("added");
-  if (line.startsWith("-") && !line.startsWith("---")) classes.push("removed");
-  if (line.startsWith("@@")) classes.push("hunk");
-  if (isHighlighted) classes.push("comment-highlight");
-  return classes.join(" ");
 }
