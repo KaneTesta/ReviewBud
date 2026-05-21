@@ -37,3 +37,27 @@ export function discussionStateLabels(discussion: PullRequestDiscussion): string
     discussion.isOutdated ? "Outdated" : null,
   ].filter((label): label is string => label !== null);
 }
+
+export type DiscussionReplyTarget =
+  | { kind: "review-comment"; commentId: number }
+  | { kind: "pull-request"; reviewId: number };
+
+export function replyTargetForDiscussion(
+  discussion: Pick<PullRequestDiscussion, "id" | "kind">,
+): DiscussionReplyTarget | null {
+  const [prefix, rawId] = discussion.id.split("-");
+  const numericId = Number(rawId);
+  if (!Number.isInteger(numericId) || numericId <= 0) {
+    return null;
+  }
+
+  if (discussion.kind === "comment" && prefix === "comment") {
+    return { kind: "review-comment", commentId: numericId };
+  }
+
+  if (discussion.kind === "review" && prefix === "review") {
+    return { kind: "pull-request", reviewId: numericId };
+  }
+
+  return null;
+}

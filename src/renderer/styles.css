@@ -859,7 +859,8 @@ kbd {
 }
 
 .line-comment-composer textarea,
-.review-summary-input {
+.review-summary-input,
+.discussion-reply-composer textarea {
   grid-column: 1 / -1;
   width: 100%;
   min-height: 78px;
@@ -870,6 +871,45 @@ kbd {
   background: var(--surface-1);
   color: var(--ink);
   line-height: 1.45;
+}
+
+.discussion-reply-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  padding: 6px 9px;
+  background: var(--surface-1);
+  color: var(--ink-muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.discussion-reply-toggle:hover {
+  border-color: var(--hairline-strong);
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+.discussion-reply-composer {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.discussion-reply-composer textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
+.discussion-reply-error {
+  margin: 0;
+  color: var(--danger-muted);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .line-comment-composer .composer-actions {
@@ -1464,6 +1504,12 @@ kbd {
   text-align: left;
 }
 
+.selection-row.repo-row {
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  padding: 0 12px 0 8px;
+}
+
 .selection-row:hover,
 .selection-row.selected {
   background: var(--surface-2);
@@ -1480,6 +1526,45 @@ kbd {
   color: var(--primary);
 }
 
+.repo-star-button,
+.repo-select-button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.repo-star-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 36px;
+  padding: 0;
+  color: var(--ink-tertiary);
+}
+
+.repo-star-button:hover,
+.repo-star-button.active {
+  color: #d9a526;
+}
+
+.repo-star-button svg {
+  margin-top: 0;
+  color: currentColor;
+}
+
+.repo-select-button {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 10px 0;
+  text-align: left;
+}
+
+.selection-row.pr-row-closed .pr-state-icon {
+  color: var(--danger-muted);
+}
+
 .selection-row span {
   display: grid;
   gap: 3px;
@@ -1487,21 +1572,25 @@ kbd {
 }
 
 .selection-row strong,
-.selection-row small {
+.selection-row small,
+.repo-select-button strong,
+.repo-select-button small {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.selection-row strong {
+.selection-row strong,
+.repo-select-button strong {
   color: inherit;
   font-size: 13px;
   font-weight: 600;
   line-height: 1.25;
 }
 
-.selection-row small {
+.selection-row small,
+.repo-select-button small {
   color: var(--ink-subtle);
   font-size: 12px;
   line-height: 1.25;

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { diffDecorationsForRows } from "../src/renderer/src/App";
+import {
+  diffDecorationsForRows,
+  scrollDiffPaneWithArrowKey,
+} from "../src/renderer/src/App";
 import type { DiffRow } from "../src/shared/types";
 
 const monaco = {
@@ -39,5 +42,71 @@ describe("comment interactions", () => {
       String(decorations[0]?.options.className),
       /\bdiff-monaco-line-commentable\b/,
     );
+  });
+
+  it("scrolls the diff pane with plain up and down arrow keys", () => {
+    const scrollCalls: ScrollToOptions[] = [];
+    const scrollContainer = {
+      scrollBy: (options: ScrollToOptions) => {
+        scrollCalls.push(options);
+      },
+    };
+    let prevented = false;
+    let stopped = false;
+
+    const handled = scrollDiffPaneWithArrowKey(
+      {
+        key: "ArrowDown",
+        altKey: false,
+        ctrlKey: false,
+        defaultPrevented: false,
+        metaKey: false,
+        shiftKey: false,
+        target: null,
+        preventDefault: () => {
+          prevented = true;
+        },
+        stopPropagation: () => {
+          stopped = true;
+        },
+      } as KeyboardEvent,
+      scrollContainer as never,
+      18,
+    );
+
+    assert.equal(handled, true);
+    assert.equal(prevented, true);
+    assert.equal(stopped, true);
+    assert.deepEqual(scrollCalls, [{ top: 18, behavior: "auto" }]);
+  });
+
+  it("leaves modified arrow shortcuts alone", () => {
+    const scrollContainer = {
+      scrollBy: () => {
+        throw new Error("modified shortcuts should not scroll the diff pane");
+      },
+    };
+    let prevented = false;
+
+    const handled = scrollDiffPaneWithArrowKey(
+      {
+        key: "ArrowUp",
+        altKey: false,
+        ctrlKey: true,
+        defaultPrevented: false,
+        metaKey: false,
+        shiftKey: false,
+        target: null,
+        preventDefault: () => {
+          prevented = true;
+        },
+        stopPropagation: () => {},
+      } as KeyboardEvent,
+      scrollContainer as never,
+      18,
+    );
+
+    assert.equal(handled, false);
+    assert.equal(prevented, false);
   });
 });

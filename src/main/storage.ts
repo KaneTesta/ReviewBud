@@ -3,6 +3,7 @@ import path from "node:path";
 import type {
   CachedPullRequest,
   DraftReviewComment,
+  RepositorySummary,
   DraftReviewSubmission,
   ReviewNote,
   ReviewWorkspace,
@@ -10,9 +11,11 @@ import type {
 
 export class ReviewStorage {
   private readonly cacheDir: string;
+  private readonly starredRepositoriesPath: string;
 
   constructor(userDataPath: string) {
     this.cacheDir = path.join(userDataPath, "pull-requests");
+    this.starredRepositoriesPath = path.join(userDataPath, "starred-repositories.json");
   }
 
   async savePullRequest(pullRequest: CachedPullRequest): Promise<ReviewWorkspace> {
@@ -56,6 +59,32 @@ export class ReviewStorage {
     return nextWorkspace;
   }
 
+  async applyRepositoryStars(repositories: RepositorySummary[]): Promise<RepositorySummary[]> {
+    const starredRepositories = await this.loadStarredRepositories();
+    return repositories.map((repository) => ({
+      ...repository,
+      isStarred: starredRepositories.has(repository.fullName),
+    }));
+  }
+
+  async setRepositoryStar(fullName: string, isStarred: boolean): Promise<string[]> {
+    const normalizedFullName = fullName.trim();
+    if (!normalizedFullName) {
+      throw new Error("Repository full name is required.");
+    }
+
+    const starredRepositories = await this.loadStarredRepositories();
+    if (isStarred) {
+      starredRepositories.add(normalizedFullName);
+    } else {
+      starredRepositories.delete(normalizedFullName);
+    }
+
+    const nextStarredRepositories = [...starredRepositories].sort((left, right) => left.localeCompare(right));
+    await writeFile(this.starredRepositoriesPath, JSON.stringify(nextStarredRepositories, null, 2), "utf8");
+    return nextStarredRepositories;
+  }
+
   private async loadExistingWorkspace(id: string): Promise<ReviewWorkspace | null> {
     try {
       return await this.loadWorkspace(id);
@@ -70,6 +99,17 @@ export class ReviewStorage {
 
   private async ensureCacheDir(): Promise<void> {
     await mkdir(this.cacheDir, { recursive: true });
+  }
+
+  private async loadStarredRepositories(): Promise<Set<string>> {
+    try {
+      const raw = await readFile(this.starredRepositoriesPath, "utf8");
+      const starredRepositories = JSON.parse(raw) as unknown;
+      if (!Array.isArray(starredRepositories)) return new Set();
+      return new Set(starredRepositories.filter((fullName): fullName is string => typeof fullName === "string"));
+    } catch {
+      return new Set();
+    }
   }
 }
 

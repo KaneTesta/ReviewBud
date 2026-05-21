@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   discussionAffectsDiffRow,
   discussionAffectsDiffPosition,
+  replyTargetForDiscussion,
   discussionStateLabels,
   discussionsForFile,
   shouldCollapseDiscussion,
@@ -151,5 +152,27 @@ describe("discussionsForFile", () => {
       }),
       false,
     );
+  });
+});
+
+describe("replyTargetForDiscussion", () => {
+  it("targets review comments through the GitHub review comment reply API", () => {
+    assert.deepEqual(
+      replyTargetForDiscussion({ id: "comment-123", kind: "comment" }),
+      { kind: "review-comment", commentId: 123 },
+    );
+  });
+
+  it("targets pull-request-level reviews as pull request conversation replies", () => {
+    assert.deepEqual(
+      replyTargetForDiscussion({ id: "review-456", kind: "review" }),
+      { kind: "pull-request", reviewId: 456 },
+    );
+  });
+
+  it("rejects malformed discussion ids", () => {
+    assert.equal(replyTargetForDiscussion({ id: "comment-nope", kind: "comment" }), null);
+    assert.equal(replyTargetForDiscussion({ id: "review-0", kind: "review" }), null);
+    assert.equal(replyTargetForDiscussion({ id: "review-1", kind: "comment" }), null);
   });
 });

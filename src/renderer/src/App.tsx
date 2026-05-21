@@ -10,14 +10,15 @@ import {
   CheckCircle2,
   Eye,
   FileCode2,
-  GitBranch,
   GitPullRequestArrow,
+  GitPullRequestClosed,
   GitPullRequest,
   Loader2,
   Moon,
   MessageSquareText,
   RefreshCw,
   Send,
+  Star,
   Sun,
   X,
 } from "lucide-react";
@@ -56,7 +57,7 @@ import {
   upsertDraftComment,
   withReviewState,
 } from "../../shared/review-state";
-import { filterRepositories, repositoryOwners } from "../../shared/repositories";
+import { filterRepositories, repositoryOwners, sortRepositoriesForDisplay } from "../../shared/repositories";
 
 const defaultUrl = "";
 const themeStorageKey = "pr-tool-theme";
@@ -113,6 +114,14 @@ type LineSelection = {
   endLine: number;
 } | null;
 
+export function isClosedPullRequest(pullRequest: Pick<PullRequestListItem, "state">): boolean {
+  return pullRequest.state.toLowerCase() === "closed";
+}
+
+export function pullRequestListRowClassName(pullRequest: Pick<PullRequestListItem, "state">): string {
+  return isClosedPullRequest(pullRequest) ? "selection-row pr-row pr-row-closed" : "selection-row pr-row";
+}
+
 function loadMonaco(): Promise<MonacoApi> {
   return Promise.all([
     import("monaco-editor/esm/vs/editor/editor.api.js"),
@@ -142,6 +151,9 @@ export function App() {
   );
   const [symbolError, setSymbolError] = useState<string | null>(null);
   const [commentSelection, setCommentSelection] = useState<LineSelection>(null);
+  const [replyStateByDiscussionId, setReplyStateByDiscussionId] = useState<
+    Record<string, { status: "submitting" | "error"; message?: string }>
+  >({});
   const [finishReviewOpen, setFinishReviewOpen] = useState(false);
   const [fileSources, setFileSources] = useState<Record<string, string>>({});
   const [expandedDiffGaps, setExpandedDiffGaps] = useState<Record<string, string[]>>({});
@@ -270,6 +282,7 @@ export function App() {
       setUrl(nextWorkspace.pullRequest.summary.url);
       setFileSources({});
       setExpandedDiffGaps({});
+      setReplyStateByDiscussionId({});
     } catch (loadError) {
       setError(
         loadError instanceof Error ? loadError.message : String(loadError),
@@ -375,6 +388,41 @@ export function App() {
     setFinishReviewOpen(false);
   }
 
+  async function replyToDiscussion(discussion: PullRequestDiscussion, body: string) {
+    if (!workspace) return;
+    const trimmedBody = body.trim();
+    if (!trimmedBody) return;
+
+    const { summary } = workspace.pullRequest;
+    setReplyStateByDiscussionId((current) => ({
+      ...current,
+      [discussion.id]: { status: "submitting" },
+    }));
+
+    try {
+      const nextWorkspace = await window.prTool.replyToDiscussion({
+        owner: summary.owner,
+        repo: summary.repo,
+        number: summary.number,
+        discussionId: discussion.id,
+        body: trimmedBody,
+      });
+      setWorkspace(nextWorkspace);
+      setReplyStateByDiscussionId((current) => {
+        const { [discussion.id]: _removed, ...remaining } = current;
+        return remaining;
+      });
+    } catch (replyError) {
+      setReplyStateByDiscussionId((current) => ({
+        ...current,
+        [discussion.id]: {
+          status: "error",
+          message: replyError instanceof Error ? replyError.message : String(replyError),
+        },
+      }));
+    }
+  }
+
   async function loadRepositories() {
     if (!canListRepositories()) {
       setRepoListState("error");
@@ -428,6 +476,31 @@ export function App() {
     }
   }
 
+  async function toggleRepositoryStar(repository: RepositorySummary) {
+    if (!canSetRepositoryStar()) {
+      setRepoListError("Restart ReviewBud to enable repository starring.");
+      return;
+    }
+
+    const nextIsStarred = !repository.isStarred;
+    applyRepositoryStarState(repository.fullName, nextIsStarred);
+
+    try {
+      await window.prTool.setRepositoryStar(repository.fullName, nextIsStarred);
+    } catch (starError) {
+      applyRepositoryStarState(repository.fullName, Boolean(repository.isStarred));
+      setRepoListError(starError instanceof Error ? starError.message : String(starError));
+      throw starError;
+    }
+  }
+
+  function applyRepositoryStarState(fullName: string, isStarred: boolean) {
+    const updateRepository = (item: RepositorySummary): RepositorySummary =>
+      item.fullName === fullName ? { ...item, isStarred } : item;
+    setRepositories((current) => sortRepositoriesForDisplay(current.map(updateRepository)));
+    setSelectedRepository((current) => (current?.fullName === fullName ? updateRepository(current) : current));
+  }
+
   function returnToPullRequestList() {
     setWorkspace(null);
     setSelectedFile(null);
@@ -438,6 +511,7 @@ export function App() {
     setExpandedDiffGaps({});
     setCommentSelection(null);
     setFinishReviewOpen(false);
+    setReplyStateByDiscussionId({});
   }
 
   async function toggleCollapsedDiffGap(file: PullRequestFile, row: DiffRow) {
@@ -595,9 +669,11 @@ export function App() {
                     commentSelection={commentSelection}
                     source={fileSources[currentFile.filename] ?? null}
                     expandedGapKeys={expandedDiffGaps[currentFile.filename] ?? []}
+                    replyStateByDiscussionId={replyStateByDiscussionId}
                     onOpenSymbol={openSymbolContext}
                     onToggleCollapsedGap={toggleCollapsedDiffGap}
                     onSelectCommentRange={setCommentSelection}
+                    onReplyToDiscussion={replyToDiscussion}
                   />
                   {showSymbolSplit ? (
                     <>
@@ -656,6 +732,7 @@ export function App() {
                 onSelectRepository={selectRepository}
                 onReloadRepositories={loadRepositories}
                 onSearchRepositories={searchRepositoryList}
+                onToggleRepositoryStar={toggleRepositoryStar}
               />
             )}
           </section>
@@ -699,6 +776,7 @@ function keyboardShortcuts() {
 }
 
 function isTypingTarget(target: EventTarget | null): boolean {
+  if (typeof HTMLElement === "undefined") return false;
   if (!(target instanceof HTMLElement)) return false;
   return target.matches("input, textarea, select, [contenteditable='true']");
 }
@@ -713,6 +791,10 @@ function canListPullRequests(): boolean {
 
 function canSearchRepositories(): boolean {
   return typeof window.prTool.searchRepositories === "function";
+}
+
+function canSetRepositoryStar(): boolean {
+  return typeof window.prTool.setRepositoryStar === "function";
 }
 
 function clearMonacoTextFocus() {
@@ -742,6 +824,45 @@ function animateScrollTop(
   };
 
   window.requestAnimationFrame(step);
+}
+
+type DiffPaneArrowKeyEvent = Pick<
+  KeyboardEvent,
+  | "altKey"
+  | "ctrlKey"
+  | "defaultPrevented"
+  | "key"
+  | "metaKey"
+  | "shiftKey"
+  | "target"
+  | "preventDefault"
+  | "stopPropagation"
+>;
+
+export function scrollDiffPaneWithArrowKey(
+  event: DiffPaneArrowKeyEvent,
+  scrollContainer: Pick<HTMLElement, "scrollBy">,
+  lineHeight: number,
+): boolean {
+  if (
+    event.defaultPrevented ||
+    (event.key !== "ArrowDown" && event.key !== "ArrowUp") ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.shiftKey ||
+    isTypingTarget(event.target)
+  ) {
+    return false;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  scrollContainer.scrollBy({
+    top: event.key === "ArrowDown" ? lineHeight : -lineHeight,
+    behavior: "auto",
+  });
+  return true;
 }
 
 function ReviewActionPane({
@@ -1220,9 +1341,11 @@ function DiffViewer({
   commentSelection,
   source,
   expandedGapKeys,
+  replyStateByDiscussionId,
   onOpenSymbol,
   onToggleCollapsedGap,
   onSelectCommentRange,
+  onReplyToDiscussion,
 }: {
   file: PullRequestFile;
   discussions: PullRequestDiscussion[];
@@ -1232,6 +1355,7 @@ function DiffViewer({
   commentSelection: LineSelection;
   source: string | null;
   expandedGapKeys: string[];
+  replyStateByDiscussionId: Record<string, { status: "submitting" | "error"; message?: string }>;
   onOpenSymbol: (
     file: string,
     line: number,
@@ -1241,6 +1365,7 @@ function DiffViewer({
   ) => void;
   onToggleCollapsedGap: (file: PullRequestFile, row: DiffRow) => void;
   onSelectCommentRange: (selection: Exclude<LineSelection, null>) => void;
+  onReplyToDiscussion: (discussion: PullRequestDiscussion, body: string) => void;
 }) {
   const rows = useMemo(
     () =>
@@ -1290,9 +1415,17 @@ function DiffViewer({
         className="diff"
         role="region"
         aria-label={`Diff for ${file.filename}`}
+        tabIndex={0}
+        onKeyDown={(event) => {
+          scrollDiffPaneWithArrowKey(event.nativeEvent, event.currentTarget, 18);
+        }}
       >
         {topDiscussions.length > 0 ? (
-          <InlineDiscussions discussions={topDiscussions} />
+          <InlineDiscussions
+            discussions={topDiscussions}
+            replyStateByDiscussionId={replyStateByDiscussionId}
+            onReply={onReplyToDiscussion}
+          />
         ) : null}
         <DiffCodeEditor
           file={file}
@@ -1306,6 +1439,8 @@ function DiffViewer({
           onOpenSymbol={onOpenSymbol}
           onToggleCollapsedGap={onToggleCollapsedGap}
           onSelectCommentRange={onSelectCommentRange}
+          replyStateByDiscussionId={replyStateByDiscussionId}
+          onReplyToDiscussion={onReplyToDiscussion}
         />
       </div>
     </section>
@@ -1322,6 +1457,8 @@ function DiffCodeEditor({
   onOpenSymbol,
   onToggleCollapsedGap,
   onSelectCommentRange,
+  replyStateByDiscussionId,
+  onReplyToDiscussion,
 }: {
   file: PullRequestFile;
   rows: DiffRow[];
@@ -1338,6 +1475,8 @@ function DiffCodeEditor({
   ) => void;
   onToggleCollapsedGap: (file: PullRequestFile, row: DiffRow) => void;
   onSelectCommentRange: (selection: Exclude<LineSelection, null>) => void;
+  replyStateByDiscussionId: Record<string, { status: "submitting" | "error"; message?: string }>;
+  onReplyToDiscussion: (discussion: PullRequestDiscussion, body: string) => void;
 }) {
   const editorElementRef = useRef<HTMLDivElement | null>(null);
   const onOpenSymbolRef = useRef(onOpenSymbol);
@@ -1428,6 +1567,8 @@ function DiffCodeEditor({
       const discussionZoneRoots = applyDiffDiscussionZones(
         editor,
         discussionGroups,
+        replyStateByDiscussionId,
+        onReplyToDiscussion,
       );
       let interactionSelection: LineSelection = null;
       let interactionSelectionKey = "";
@@ -1624,25 +1765,11 @@ function DiffCodeEditor({
         }
       };
       const scrollDiffWithKeyboard = (event: KeyboardEvent) => {
-        if (
-          (event.key !== "ArrowDown" && event.key !== "ArrowUp") ||
-          event.altKey ||
-          event.ctrlKey ||
-          event.metaKey
-        ) {
-          return;
-        }
-
         const scrollContainer = editorElement.closest(".diff");
         if (!(scrollContainer instanceof HTMLElement)) return;
 
-        event.preventDefault();
-        event.stopPropagation();
         const lineHeight = editor.getOption(monaco.editor.EditorOption.lineHeight);
-        scrollContainer.scrollBy({
-          top: event.key === "ArrowDown" ? lineHeight : -lineHeight,
-          behavior: "auto",
-        });
+        scrollDiffPaneWithArrowKey(event, scrollContainer, lineHeight);
       };
       editorElement.addEventListener("pointerdown", editorPointerDown, true);
       editorElement.addEventListener("pointerdown", commentPointerDown, true);
@@ -1694,6 +1821,8 @@ function DiffCodeEditor({
     draftComments,
     editorModel,
     file.filename,
+    onReplyToDiscussion,
+    replyStateByDiscussionId,
     theme,
   ]);
 
@@ -2423,6 +2552,8 @@ function discussionsByPosition(
 function applyDiffDiscussionZones(
   editor: Monaco.editor.IStandaloneCodeEditor,
   groups: Array<{ position: number; discussions: PullRequestDiscussion[] }>,
+  replyStateByDiscussionId: Record<string, { status: "submitting" | "error"; message?: string }>,
+  onReply: (discussion: PullRequestDiscussion, body: string) => void,
 ): Root[] {
   const roots: Root[] = [];
   editor.changeViewZones((accessor) => {
@@ -2430,7 +2561,13 @@ function applyDiffDiscussionZones(
       const node = document.createElement("div");
       node.className = "diff-discussion-zone";
       const root = createRoot(node);
-      root.render(<InlineDiscussions discussions={group.discussions} />);
+      root.render(
+        <InlineDiscussions
+          discussions={group.discussions}
+          replyStateByDiscussionId={replyStateByDiscussionId}
+          onReply={onReply}
+        />,
+      );
       roots.push(root);
 
       accessor.addZone({
@@ -2446,15 +2583,19 @@ function applyDiffDiscussionZones(
 function discussionGroupHeight(discussions: PullRequestDiscussion[]): number {
   return discussions.reduce((height, discussion) => {
     const bodyLines = Math.ceil(discussion.body.length / 90);
-    return height + Math.max(86, 70 + bodyLines * 18);
+    return height + Math.max(126, 110 + bodyLines * 18);
   }, 8);
 }
 
 function InlineDiscussions({
   discussions,
+  replyStateByDiscussionId = {},
+  onReply,
   onHoverDiscussion,
 }: {
   discussions: PullRequestDiscussion[];
+  replyStateByDiscussionId?: Record<string, { status: "submitting" | "error"; message?: string }>;
+  onReply?: (discussion: PullRequestDiscussion, body: string) => void;
   onHoverDiscussion?: (discussion: PullRequestDiscussion | null) => void;
 }) {
   return (
@@ -2488,6 +2629,13 @@ function InlineDiscussions({
           >
             <summary>{heading}</summary>
             <MarkdownBody body={discussion.body} />
+            {onReply ? (
+              <DiscussionReplyComposer
+                discussion={discussion}
+                state={replyStateByDiscussionId[discussion.id]}
+                onReply={onReply}
+              />
+            ) : null}
           </details>
         ) : (
           <article
@@ -2500,10 +2648,108 @@ function InlineDiscussions({
           >
             {heading}
             <MarkdownBody body={discussion.body} />
+            {onReply ? (
+              <DiscussionReplyComposer
+                discussion={discussion}
+                state={replyStateByDiscussionId[discussion.id]}
+                onReply={onReply}
+              />
+            ) : null}
           </article>
         );
       })}
     </div>
+  );
+}
+
+function DiscussionReplyComposer({
+  discussion,
+  state,
+  onReply,
+}: {
+  discussion: PullRequestDiscussion;
+  state?: { status: "submitting" | "error"; message?: string };
+  onReply: (discussion: PullRequestDiscussion, body: string) => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [body, setBody] = useState("");
+  const isSubmitting = state?.status === "submitting";
+
+  useEffect(() => {
+    if (!isSubmitting && state?.status !== "error") {
+      setBody("");
+      setIsOpen(false);
+    }
+  }, [isSubmitting, state?.status]);
+
+  if (!isOpen) {
+    return (
+      <button
+        type="button"
+        className="discussion-reply-toggle"
+        onClick={() => setIsOpen(true)}
+      >
+        <MessageSquareText size={14} aria-hidden="true" />
+        Reply
+      </button>
+    );
+  }
+
+  return (
+    <form
+      className="discussion-reply-composer"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!body.trim() || isSubmitting) return;
+        onReply(discussion, body);
+      }}
+    >
+      <textarea
+        value={body}
+        aria-label={`Reply to ${discussion.author}`}
+        placeholder="Reply to this discussion"
+        disabled={isSubmitting}
+        onChange={(event) => setBody(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && !isSubmitting) {
+            event.preventDefault();
+            setIsOpen(false);
+          }
+          if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+            event.preventDefault();
+            if (body.trim() && !isSubmitting) {
+              onReply(discussion, body);
+            }
+          }
+        }}
+      />
+      {state?.status === "error" ? (
+        <p className="discussion-reply-error">{state.message}</p>
+      ) : null}
+      <div className="composer-actions">
+        <button
+          type="button"
+          className="secondary-action"
+          disabled={isSubmitting}
+          onClick={() => setIsOpen(false)}
+        >
+          <X size={14} aria-hidden="true" />
+          Cancel
+        </button>
+        <button
+          type="submit"
+          className="primary-action"
+          disabled={!body.trim() || isSubmitting}
+        >
+          {isSubmitting ? (
+            <Loader2 className="spin" size={14} aria-hidden="true" />
+          ) : (
+            <Send size={14} aria-hidden="true" />
+          )}
+          {isSubmitting ? "Replying" : "Reply"}
+        </button>
+      </div>
+    </form>
   );
 }
 
@@ -2541,6 +2787,7 @@ function Welcome({
   onSelectRepository,
   onReloadRepositories,
   onSearchRepositories,
+  onToggleRepositoryStar,
 }: {
   url: string;
   repositories: RepositorySummary[];
@@ -2555,6 +2802,7 @@ function Welcome({
   onSelectRepository: (repository: RepositorySummary) => Promise<void>;
   onReloadRepositories: () => Promise<void>;
   onSearchRepositories: (query: string, owner: string) => Promise<RepositorySummary[]>;
+  onToggleRepositoryStar: (repository: RepositorySummary) => Promise<void>;
 }) {
   const [repositoryQuery, setRepositoryQuery] = useState("");
   const [repositoryOwner, setRepositoryOwner] = useState("");
@@ -2566,11 +2814,23 @@ function Welcome({
   const visibleRepositories = shouldSearchGitHub ? searchRepositories : repositories;
   const filteredRepositories = useMemo(
     () =>
-      shouldSearchGitHub
-        ? visibleRepositories
-        : filterRepositories(visibleRepositories, repositoryQuery, repositoryOwner),
+      sortRepositoriesForDisplay(
+        shouldSearchGitHub
+          ? visibleRepositories
+          : filterRepositories(visibleRepositories, repositoryQuery, repositoryOwner),
+      ),
     [repositoryOwner, repositoryQuery, shouldSearchGitHub, visibleRepositories],
   );
+
+  function applySearchRepositoryStarState(fullName: string, isStarred: boolean) {
+    setSearchRepositories((current) =>
+      sortRepositoriesForDisplay(
+        current.map((repository) =>
+          repository.fullName === fullName ? { ...repository, isStarred } : repository,
+        ),
+      ),
+    );
+  }
 
   useEffect(() => {
     if (!shouldSearchGitHub) {
@@ -2588,7 +2848,7 @@ function Welcome({
       void onSearchRepositories(repositoryQuery, repositoryOwner)
         .then((nextRepositories) => {
           if (cancelled) return;
-          setSearchRepositories(nextRepositories);
+          setSearchRepositories(sortRepositoriesForDisplay(nextRepositories));
           setRepositorySearchState("idle");
         })
         .catch((searchError) => {
@@ -2653,18 +2913,35 @@ function Welcome({
           </div>
           <div className="selection-list" role="list" aria-label="Recent repositories">
             {filteredRepositories.map((repository) => (
-              <button
+              <div
                 key={repository.fullName}
-                type="button"
-                className={selectedRepository?.fullName === repository.fullName ? "selection-row selected" : "selection-row"}
-                onClick={() => void onSelectRepository(repository)}
+                className={selectedRepository?.fullName === repository.fullName ? "selection-row repo-row selected" : "selection-row repo-row"}
               >
-                <GitBranch size={15} aria-hidden="true" />
-                <span>
+                <button
+                  type="button"
+                  className={repository.isStarred ? "repo-star-button active" : "repo-star-button"}
+                  aria-label={`${repository.isStarred ? "Unstar" : "Star"} ${repository.fullName}`}
+                  title={`${repository.isStarred ? "Unstar" : "Star"} ${repository.fullName}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void onToggleRepositoryStar(repository).then(() => {
+                      applySearchRepositoryStarState(repository.fullName, !repository.isStarred);
+                    }).catch(() => {
+                      applySearchRepositoryStarState(repository.fullName, Boolean(repository.isStarred));
+                    });
+                  }}
+                >
+                  <Star size={15} aria-hidden="true" fill={repository.isStarred ? "currentColor" : "none"} />
+                </button>
+                <button
+                  type="button"
+                  className="repo-select-button"
+                  onClick={() => void onSelectRepository(repository)}
+                >
                   <strong>{repository.fullName}</strong>
                   <small>{repository.description || "No description"}</small>
-                </span>
-              </button>
+                </button>
+              </div>
             ))}
             {(repoListState === "loading" && repositories.length === 0) || repositorySearchState === "loading" ? (
               <div className="landing-empty">Loading repositories...</div>
@@ -2690,11 +2967,15 @@ function Welcome({
               <button
                 key={pullRequest.id}
                 type="button"
-                className="selection-row pr-row"
+                className={pullRequestListRowClassName(pullRequest)}
                 disabled={isLoading}
                 onClick={() => void onLoadPullRequest(pullRequest.url)}
               >
-                <GitPullRequestArrow size={15} aria-hidden="true" />
+                {isClosedPullRequest(pullRequest) ? (
+                  <GitPullRequestClosed className="pr-state-icon" size={15} aria-hidden="true" />
+                ) : (
+                  <GitPullRequestArrow className="pr-state-icon" size={15} aria-hidden="true" />
+                )}
                 <span>
                   <strong>#{pullRequest.number} {pullRequest.title}</strong>
                   <small>{pullRequest.state} by {pullRequest.author}</small>

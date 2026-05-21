@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { filterRepositories, repositoryOwners } from "../src/shared/repositories.js";
+import { filterRepositories, repositoryOwners, sortRepositoriesForDisplay } from "../src/shared/repositories.js";
 import type { RepositorySummary } from "../src/shared/types.js";
 
 const repositories: RepositorySummary[] = [
@@ -10,6 +10,7 @@ const repositories: RepositorySummary[] = [
     repo: "review-bud",
     description: "Local pull request review app",
     updatedAt: "2026-05-21T00:00:00Z",
+    isStarred: false,
   },
   {
     fullName: "acme/payments-api",
@@ -17,6 +18,7 @@ const repositories: RepositorySummary[] = [
     repo: "payments-api",
     description: "Billing service",
     updatedAt: "2026-05-20T00:00:00Z",
+    isStarred: true,
   },
 ];
 
@@ -51,5 +53,14 @@ describe("filterRepositories", () => {
 describe("repositoryOwners", () => {
   it("returns unique repository owners sorted by name", () => {
     assert.deepEqual(repositoryOwners(repositories), ["acme", "openai"]);
+  });
+});
+
+describe("sortRepositoriesForDisplay", () => {
+  it("puts starred repositories first without reordering each group", () => {
+    assert.deepEqual(
+      sortRepositoriesForDisplay(repositories).map((repository) => repository.fullName),
+      ["acme/payments-api", "openai/review-bud"],
+    );
   });
 });

@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import type {
   CachedPullRequest,
   PullRequestDiscussion,
+  PullRequestDiscussionReplyRequest,
   PullRequestFile,
   PullRequestListItem,
   PullRequestRef,
@@ -11,6 +12,7 @@ import type {
   SymbolContext,
   SymbolContextRequest,
 } from "../shared/types.js";
+import { replyTargetForDiscussion } from "../shared/discussions.js";
 import { pullRequestId } from "../shared/pr-url.js";
 import { extractSymbolContext } from "../shared/symbol-context.js";
 import { ensureSourceSnapshot } from "./source-snapshot.js";
@@ -125,6 +127,16 @@ async function ghText(args: string[]): Promise<string> {
   }
 }
 
+async function ghEmpty(args: string[]): Promise<void> {
+  try {
+    await execFileAsync("gh", ["api", ...args], {
+      maxBuffer: 25 * 1024 * 1024,
+    });
+  } catch (error) {
+    throw new Error(formatGhError(error));
+  }
+}
+
 function formatGhError(error: unknown): string {
   if (error && typeof error === "object" && "stderr" in error) {
     const stderr = String((error as { stderr?: unknown }).stderr ?? "").trim();
@@ -158,6 +170,43 @@ export async function fetchPullRequest(ref: PullRequestRef): Promise<CachedPullR
     diff,
     loadedAt: new Date().toISOString(),
   };
+}
+
+export async function replyToPullRequestDiscussion(
+  request: PullRequestDiscussionReplyRequest,
+): Promise<CachedPullRequest> {
+  const body = request.body.trim();
+  if (!body) {
+    throw new Error("Reply body is required.");
+  }
+
+  const target = replyTargetForDiscussion({
+    id: request.discussionId,
+    kind: request.discussionId.startsWith("comment-") ? "comment" : "review",
+  });
+  if (!target) {
+    throw new Error("Unsupported discussion reply target.");
+  }
+
+  if (target.kind === "review-comment") {
+    await ghEmpty([
+      `repos/${request.owner}/${request.repo}/pulls/comments/${target.commentId}/replies`,
+      "--method",
+      "POST",
+      "-f",
+      `body=${body}`,
+    ]);
+  } else {
+    await ghEmpty([
+      `repos/${request.owner}/${request.repo}/issues/${request.number}/comments`,
+      "--method",
+      "POST",
+      "-f",
+      `body=${body}`,
+    ]);
+  }
+
+  return fetchPullRequest(request);
 }
 
 export async function fetchRecentRepositories(): Promise<RepositorySummary[]> {

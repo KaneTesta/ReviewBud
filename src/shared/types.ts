@@ -50,6 +50,11 @@ export interface PullRequestDiscussion {
   kind: "review" | "comment";
 }
 
+export interface PullRequestDiscussionReplyRequest extends PullRequestRef {
+  discussionId: string;
+  body: string;
+}
+
 export interface ReviewNote {
   file: string;
   status: "unread" | "reviewing" | "done" | "question";
@@ -106,6 +111,7 @@ export interface RepositorySummary {
   repo: string;
   description: string;
   updatedAt: string;
+  isStarred?: boolean;
 }
 
 export interface PullRequestListItem extends PullRequestRef {

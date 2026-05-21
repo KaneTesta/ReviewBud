@@ -1,8 +1,9 @@
 import { app, BrowserWindow, ipcMain } from "electron";
-import { fetchFileSource, fetchPullRequest, fetchRecentPullRequests, fetchRecentRepositories, fetchSymbolContext, searchRepositories } from "./github.js";
+import { fetchFileSource, fetchPullRequest, fetchRecentPullRequests, fetchRecentRepositories, fetchSymbolContext, replyToPullRequestDiscussion, searchRepositories } from "./github.js";
 import { ReviewStorage } from "./storage.js";
 import { parsePullRequestUrl } from "../shared/pr-url.js";
-import type { DraftReviewComment, DraftReviewSubmission, ReviewNote, SymbolContextRequest } from "../shared/types.js";
+import { sortRepositoriesForDisplay } from "../shared/repositories.js";
+import type { DraftReviewComment, DraftReviewSubmission, PullRequestDiscussionReplyRequest, ReviewNote, SymbolContextRequest } from "../shared/types.js";
 
 const titleBarThemes = {
   dark: {
@@ -33,10 +34,16 @@ export function registerIpcHandlers(): void {
     return storage.savePullRequest(pullRequest);
   });
 
-  ipcMain.handle("repos:list", () => fetchRecentRepositories());
+  ipcMain.handle("repos:list", async () =>
+    sortRepositoriesForDisplay(await storage.applyRepositoryStars(await fetchRecentRepositories())),
+  );
 
-  ipcMain.handle("repos:search", (_event, query: string, owner: string) =>
-    searchRepositories(query, owner),
+  ipcMain.handle("repos:search", async (_event, query: string, owner: string) =>
+    sortRepositoriesForDisplay(await storage.applyRepositoryStars(await searchRepositories(query, owner))),
+  );
+
+  ipcMain.handle("repos:setStar", async (_event, fullName: string, isStarred: boolean) =>
+    storage.setRepositoryStar(fullName, isStarred),
   );
 
   ipcMain.handle("prs:list", (_event, owner: string, repo: string) =>
@@ -63,4 +70,9 @@ export function registerIpcHandlers(): void {
   ipcMain.handle("pr:fileSource", async (_event, request: SymbolContextRequest) =>
     fetchFileSource(request),
   );
+
+  ipcMain.handle("pr:replyDiscussion", async (_event, request: PullRequestDiscussionReplyRequest) => {
+    const pullRequest = await replyToPullRequestDiscussion(request);
+    return storage.savePullRequest(pullRequest);
+  });
 }

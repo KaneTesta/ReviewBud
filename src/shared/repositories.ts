@@ -19,6 +19,18 @@ export function filterRepositories(
   });
 }
 
+export function sortRepositoriesForDisplay(
+  repositories: RepositorySummary[],
+): RepositorySummary[] {
+  return repositories
+    .map((repository, index) => ({ repository, index }))
+    .sort((left, right) => {
+      const starredDelta = Number(Boolean(right.repository.isStarred)) - Number(Boolean(left.repository.isStarred));
+      return starredDelta || left.index - right.index;
+    })
+    .map(({ repository }) => repository);
+}
+
 export function repositoryOwners(repositories: RepositorySummary[]): string[] {
   return [...new Set(repositories.map((repository) => repository.owner))]
     .filter(Boolean)
