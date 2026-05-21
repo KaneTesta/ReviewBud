@@ -37,12 +37,12 @@ import {
   discussionsForFile,
   shouldCollapseDiscussion,
 } from "../../shared/discussions";
-import { buildDiffRows, tokenizeCodeLine } from "../../shared/symbol-context";
+import { buildDiffRows, displayDiffLine, tokenizeCodeLine } from "../../shared/symbol-context";
 import {
   adjacentFile,
   createDraftReview,
-  markFileViewed,
   reviewProgress,
+  toggleFileViewed,
   upsertDraftComment,
   withReviewState,
 } from "../../shared/review-state";
@@ -171,7 +171,7 @@ export function App() {
       }
       if (event.key === "Enter") {
         event.preventDefault();
-        markCurrentFileViewed();
+        toggleCurrentFileViewed();
         return;
       }
       if (event.key.toLowerCase() === "c" && event.shiftKey) {
@@ -284,11 +284,11 @@ export function App() {
     }
   }
 
-  function markCurrentFileViewed() {
+  function toggleCurrentFileViewed() {
     if (!workspace || !currentFile) return;
     persistWorkspace(
       withReviewState(workspace, {
-        notes: markFileViewed(workspace.notes, currentFile.filename),
+        notes: toggleFileViewed(workspace.notes, currentFile.filename),
       }),
     );
   }
@@ -415,7 +415,7 @@ export function App() {
                   shortcuts={shortcuts}
                   onNextFile={() => selectAdjacentFile("next")}
                   onPreviousFile={() => selectAdjacentFile("previous")}
-                  onMarkViewed={markCurrentFileViewed}
+                  onMarkViewed={toggleCurrentFileViewed}
                   onToggleCommentMode={() =>
                     setCommentMode((current) => !current)
                   }
@@ -508,6 +508,7 @@ function ReviewActionPane({
   const currentNote = workspace.notes.find(
     (note) => note.file === currentFile.filename,
   );
+  const currentFileViewed = currentNote?.status === "done";
   const draftComments = workspace.draftComments ?? [];
 
   useEffect(() => {
@@ -560,11 +561,16 @@ function ReviewActionPane({
           <ArrowRight size={15} aria-hidden="true" />
         </ShortcutButton>
         <ShortcutButton
-          label="Mark viewed"
+          label={currentFileViewed ? "Viewed" : "Mark viewed"}
           shortcut={shortcuts.viewed}
+          pressed={currentFileViewed}
           onClick={onMarkViewed}
         >
-          <Eye size={15} aria-hidden="true" />
+          {currentFileViewed ? (
+            <CheckCircle2 size={15} aria-hidden="true" />
+          ) : (
+            <Eye size={15} aria-hidden="true" />
+          )}
         </ShortcutButton>
         <ShortcutButton
           label={commentMode ? "Comment on" : "Comment"}
@@ -1132,23 +1138,37 @@ function DiffCodeEditor({
           draftComments,
           commentMode,
           commentSelection,
+          null,
         ),
       );
       const discussionZoneRoots = applyDiffDiscussionZones(
         editor,
         discussionGroups,
       );
+      let interactionSelection: LineSelection = null;
+      let interactionSelectionKey = "";
+      const setInteractionSelection = (selection: LineSelection) => {
+        const nextKey = selection
+          ? `${selection.file}:${selection.startLine}-${selection.endLine}`
+          : "";
+        if (nextKey === interactionSelectionKey) return;
+        interactionSelection = selection;
+        interactionSelectionKey = nextKey;
+        diffDecorations.set(
+          diffDecorationsForRows(
+            monaco,
+            editorModel.rows,
+            discussions,
+            draftComments,
+            commentModeRef.current,
+            commentSelection,
+            interactionSelection,
+          ),
+        );
+      };
 
       const clickDisposable = editor.onMouseDown(
         (event: Monaco.editor.IEditorMouseEvent) => {
-          if (commentModeRef.current) {
-            const newLine = newLineFromMouseEvent(event, editorModel.rows);
-            if (newLine) {
-              dragStartLineRef.current = newLine;
-              event.event.preventDefault();
-            }
-            return;
-          }
           if (!event.event.metaKey && !event.event.ctrlKey) return;
           const position = event.target.position;
           if (!position) return;
@@ -1180,12 +1200,118 @@ function DiffCodeEditor({
             endLine: Math.max(dragStartLineRef.current, endLine),
           });
           dragStartLineRef.current = null;
+          setInteractionSelection(null);
         },
       );
+      const mouseMoveDisposable = editor.onMouseMove(
+        (event: Monaco.editor.IEditorMouseEvent) => {
+          if (!commentModeRef.current) {
+            setInteractionSelection(null);
+            return;
+          }
+          const hoverLine = newLineFromMouseEvent(event, editorModel.rows);
+          if (!hoverLine) {
+            if (dragStartLineRef.current == null) setInteractionSelection(null);
+            return;
+          }
+          const startLine = dragStartLineRef.current ?? hoverLine;
+          setInteractionSelection({
+            file: file.filename,
+            startLine: Math.min(startLine, hoverLine),
+            endLine: Math.max(startLine, hoverLine),
+          });
+        },
+      );
+      const mouseLeaveDisposable = editor.onMouseLeave(() => {
+        if (dragStartLineRef.current == null) {
+          setInteractionSelection(null);
+        }
+      });
+      const commentPointerDown = (event: PointerEvent) => {
+        if (!commentModeRef.current || event.button !== 0) return;
+        const newLine = newLineFromClientPoint(
+          editor,
+          editorModel.rows,
+          event.clientX,
+          event.clientY,
+        );
+        if (!newLine) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        editorElement.setPointerCapture?.(event.pointerId);
+        dragStartLineRef.current = newLine;
+        editor.setSelection(new monaco.Range(1, 1, 1, 1));
+        setInteractionSelection({
+          file: file.filename,
+          startLine: newLine,
+          endLine: newLine,
+        });
+      };
+      const commentPointerMove = (event: PointerEvent) => {
+        if (!commentModeRef.current) return;
+        const hoverLine = newLineFromClientPoint(
+          editor,
+          editorModel.rows,
+          event.clientX,
+          event.clientY,
+        );
+        if (!hoverLine) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        const startLine = dragStartLineRef.current ?? hoverLine;
+        editor.setSelection(new monaco.Range(1, 1, 1, 1));
+        setInteractionSelection({
+          file: file.filename,
+          startLine: Math.min(startLine, hoverLine),
+          endLine: Math.max(startLine, hoverLine),
+        });
+      };
+      const commentPointerUp = (event: PointerEvent) => {
+        if (!commentModeRef.current || dragStartLineRef.current == null) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        const endLine =
+          newLineFromClientPoint(
+            editor,
+            editorModel.rows,
+            event.clientX,
+            event.clientY,
+          ) ?? dragStartLineRef.current;
+        onSelectCommentRangeRef.current({
+          file: file.filename,
+          startLine: Math.min(dragStartLineRef.current, endLine),
+          endLine: Math.max(dragStartLineRef.current, endLine),
+        });
+        dragStartLineRef.current = null;
+        setInteractionSelection(null);
+        editor.setSelection(new monaco.Range(1, 1, 1, 1));
+        if (editorElement.hasPointerCapture?.(event.pointerId)) {
+          editorElement.releasePointerCapture?.(event.pointerId);
+        }
+      };
+      editorElement.addEventListener("pointerdown", commentPointerDown, true);
+      editorElement.addEventListener("pointermove", commentPointerMove, true);
+      editorElement.addEventListener("pointerup", commentPointerUp, true);
 
       cleanup = () => {
+        editorElement.removeEventListener(
+          "pointerdown",
+          commentPointerDown,
+          true,
+        );
+        editorElement.removeEventListener(
+          "pointermove",
+          commentPointerMove,
+          true,
+        );
+        editorElement.removeEventListener("pointerup", commentPointerUp, true);
         clickDisposable.dispose();
         mouseUpDisposable.dispose();
+        mouseMoveDisposable.dispose();
+        mouseLeaveDisposable.dispose();
         diffDecorations.clear();
         discussionZoneRoots.forEach((root) => root.unmount());
         editor.dispose();
@@ -1211,7 +1337,7 @@ function DiffCodeEditor({
   return (
     <div
       ref={editorElementRef}
-      className="diff-editor"
+      className={`diff-editor${commentMode ? " diff-editor-comment-mode" : ""}`}
       style={{ height: `${editorHeight}px` }}
       aria-label={`${file.filename} diff`}
     />
@@ -1546,12 +1672,6 @@ function buildDiffEditorModel(rows: DiffRow[]): {
   };
 }
 
-function displayDiffLine(row: DiffRow): string {
-  if (row.kind === "hunk") return row.text;
-  if (/^[ +\-]/.test(row.text)) return row.text.slice(1);
-  return row.text;
-}
-
 function isClickableSymbol(
   line: string,
   symbol: string,
@@ -1643,6 +1763,7 @@ function diffDecorationsForRows(
   draftComments: DraftReviewComment[],
   commentMode: boolean,
   commentSelection: LineSelection,
+  interactionSelection: LineSelection,
 ): Monaco.editor.IModelDeltaDecoration[] {
   return rows.flatMap((row, index) => {
     const lineNumber = index + 1;
@@ -1680,12 +1801,22 @@ function diffDecorationsForRows(
     ) {
       lineClasses.push("diff-monaco-line-selected-comment");
     }
+    if (
+      row.newLine &&
+      interactionSelection?.file &&
+      row.newLine >= interactionSelection.startLine &&
+      row.newLine <= interactionSelection.endLine
+    ) {
+      lineClasses.push("diff-monaco-line-hover-comment");
+    }
 
     const lineDecoration: Monaco.editor.IModelDeltaDecoration = {
       range: new monaco.Range(lineNumber, 1, lineNumber, 1),
       options: {
         isWholeLine: true,
         className: lineClasses.join(" "),
+        lineNumberClassName: lineClasses.join(" "),
+        marginClassName: lineClasses.join(" "),
       },
     };
 
@@ -1721,6 +1852,18 @@ function newLineFromMouseEvent(
   const position = event.target.position;
   if (!position) return null;
   return rows[position.lineNumber - 1]?.newLine ?? null;
+}
+
+function newLineFromClientPoint(
+  editor: Monaco.editor.IStandaloneCodeEditor,
+  rows: DiffRow[],
+  clientX: number,
+  clientY: number,
+): number | null {
+  const target = editor.getTargetAtClientPoint(clientX, clientY);
+  const lineNumber = target?.position?.lineNumber;
+  if (!lineNumber) return null;
+  return rows[lineNumber - 1]?.newLine ?? null;
 }
 
 function discussionsByPosition(

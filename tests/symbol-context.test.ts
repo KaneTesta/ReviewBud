@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   buildDiffRows,
+  displayDiffLine,
   extractSymbolContext,
   tokenizeCodeLine,
 } from "../src/shared/symbol-context";
@@ -20,6 +21,18 @@ describe("buildDiffRows", () => {
         { text: " nextLine()", kind: "context", oldLine: 12, newLine: 22 },
       ],
     );
+  });
+});
+
+describe("displayDiffLine", () => {
+  it("hides unified diff range metadata from hunk headers", () => {
+    assert.equal(displayDiffLine({ text: "@@ -173,6 +173,7 @@ function renderDiff()", kind: "hunk" }), "function renderDiff()");
+    assert.equal(displayDiffLine({ text: "@@ -10,3 +20,4 @@", kind: "hunk" }), "");
+  });
+
+  it("removes diff markers from changed code lines", () => {
+    assert.equal(displayDiffLine({ text: "+const value = 1;", kind: "added", newLine: 20 }), "const value = 1;");
+    assert.equal(displayDiffLine({ text: "-const value = 0;", kind: "removed", oldLine: 10 }), "const value = 0;");
   });
 });
 

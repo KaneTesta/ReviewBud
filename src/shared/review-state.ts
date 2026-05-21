@@ -21,8 +21,12 @@ export function adjacentFile(
   return files[nextIndex]?.filename ?? null;
 }
 
-export function markFileViewed(notes: ReviewNote[], file: string): ReviewNote[] {
-  return notes.map((note) => (note.file === file ? { ...note, status: "done" } : note));
+export function toggleFileViewed(notes: ReviewNote[], file: string): ReviewNote[] {
+  return notes.map((note) =>
+    note.file === file
+      ? { ...note, status: note.status === "done" ? "unread" : "done" }
+      : note,
+  );
 }
 
 export function upsertDraftComment(

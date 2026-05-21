@@ -3,8 +3,8 @@ import { describe, it } from "node:test";
 import {
   adjacentFile,
   createDraftReview,
-  markFileViewed,
   reviewProgress,
+  toggleFileViewed,
   upsertDraftComment,
 } from "../src/shared/review-state";
 import type { PullRequestFile, ReviewNote } from "../src/shared/types";
@@ -29,15 +29,32 @@ describe("adjacentFile", () => {
 });
 
 describe("review state helpers", () => {
-  it("marks the active file as viewed without changing other notes", () => {
+  it("toggles the active file viewed state without changing other notes", () => {
     const notes: ReviewNote[] = [
       { file: "src/a.ts", status: "unread", note: "" },
       { file: "src/b.ts", status: "question", note: "Check this" },
     ];
 
-    assert.deepEqual(markFileViewed(notes, "src/a.ts"), [
+    assert.deepEqual(toggleFileViewed(notes, "src/a.ts"), [
       { file: "src/a.ts", status: "done", note: "" },
       { file: "src/b.ts", status: "question", note: "Check this" },
+    ]);
+
+    assert.deepEqual(toggleFileViewed(notes, "src/b.ts"), [
+      { file: "src/a.ts", status: "unread", note: "" },
+      { file: "src/b.ts", status: "done", note: "Check this" },
+    ]);
+  });
+
+  it("reverts a viewed file to unread when toggled again", () => {
+    const notes: ReviewNote[] = [
+      { file: "src/a.ts", status: "done", note: "" },
+      { file: "src/b.ts", status: "unread", note: "" },
+    ];
+
+    assert.deepEqual(toggleFileViewed(notes, "src/a.ts"), [
+      { file: "src/a.ts", status: "unread", note: "" },
+      { file: "src/b.ts", status: "unread", note: "" },
     ]);
   });
 

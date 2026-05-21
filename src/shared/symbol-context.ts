@@ -31,6 +31,15 @@ export function buildDiffRows(patch: string): DiffRow[] {
   });
 }
 
+export function displayDiffLine(row: DiffRow): string {
+  if (row.kind === "hunk") {
+    return row.text.match(/^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@\s?(.*)$/)?.[1] ?? row.text;
+  }
+
+  if (/^[ +\-]/.test(row.text)) return row.text.slice(1);
+  return row.text;
+}
+
 export function tokenizeCodeLine(line: string): CodeLineToken[] {
   const tokens: CodeLineToken[] = [];
   let index = 0;

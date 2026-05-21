@@ -516,10 +516,23 @@ a:focus-visible {
   cursor: copy;
 }
 
-.diff-editor .diff-monaco-line-commentable:hover,
-.diff-editor .diff-monaco-line-selected-comment {
+.diff-editor.diff-editor-comment-mode .monaco-editor .selected-text {
+  background-color: transparent;
+}
+
+.diff-editor .diff-monaco-line-commentable:hover {
   background: color-mix(in srgb, var(--primary) 22%, transparent);
   box-shadow: inset 3px 0 0 var(--primary-hover);
+}
+
+.diff-editor .diff-monaco-line-selected-comment,
+.diff-editor .diff-monaco-line-hover-comment,
+.diff-editor .diff-monaco-line-commentable.diff-monaco-line-selected-comment,
+.diff-editor .diff-monaco-line-commentable.diff-monaco-line-selected-comment:hover,
+.diff-editor .diff-monaco-line-commentable.diff-monaco-line-hover-comment,
+.diff-editor .diff-monaco-line-commentable.diff-monaco-line-hover-comment:hover {
+  background: rgb(245 202 66 / 0.26);
+  box-shadow: inset 3px 0 0 rgb(245 202 66 / 0.9);
 }
 
 :root[data-theme="light"] .diff-editor .diff-monaco-line-added {
@@ -531,6 +544,16 @@ a:focus-visible {
 }
 
 :root[data-theme="light"] .diff-editor .diff-monaco-line-comment {
+  background: rgb(217 174 26 / 0.2);
+  box-shadow: inset 3px 0 0 rgb(217 174 26 / 0.82);
+}
+
+:root[data-theme="light"] .diff-editor .diff-monaco-line-selected-comment,
+:root[data-theme="light"] .diff-editor .diff-monaco-line-hover-comment,
+:root[data-theme="light"] .diff-editor .diff-monaco-line-commentable.diff-monaco-line-selected-comment,
+:root[data-theme="light"] .diff-editor .diff-monaco-line-commentable.diff-monaco-line-selected-comment:hover,
+:root[data-theme="light"] .diff-editor .diff-monaco-line-commentable.diff-monaco-line-hover-comment,
+:root[data-theme="light"] .diff-editor .diff-monaco-line-commentable.diff-monaco-line-hover-comment:hover {
   background: rgb(217 174 26 / 0.2);
   box-shadow: inset 3px 0 0 rgb(217 174 26 / 0.82);
 }
