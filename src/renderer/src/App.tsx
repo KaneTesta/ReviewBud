@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type * as Monaco from "monaco-editor";
+import { createRoot, type Root } from "react-dom/client";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -394,7 +395,9 @@ function DiffCodeEditor({
   const editorElementRef = useRef<HTMLDivElement | null>(null);
   const onOpenSymbolRef = useRef(onOpenSymbol);
   const editorModel = useMemo(() => buildDiffEditorModel(rows), [rows]);
-  const editorHeight = Math.max(240, editorModel.lines.length * 18 + 16);
+  const discussionGroups = useMemo(() => discussionsByPosition(discussions, rows.length), [discussions, rows.length]);
+  const discussionZoneHeight = discussionGroups.reduce((total, group) => total + discussionGroupHeight(group.discussions), 0);
+  const editorHeight = Math.max(240, editorModel.lines.length * 18 + discussionZoneHeight + 16);
 
   useEffect(() => {
     onOpenSymbolRef.current = onOpenSymbol;
@@ -441,6 +444,7 @@ function DiffCodeEditor({
       const diffDecorations = editor.createDecorationsCollection(
         diffDecorationsForRows(monaco, editorModel.rows, discussions),
       );
+      const discussionZoneRoots = applyDiffDiscussionZones(editor, discussionGroups);
 
       const clickDisposable = editor.onMouseDown((event: Monaco.editor.IEditorMouseEvent) => {
         if (!event.event.metaKey && !event.event.ctrlKey) return;
@@ -457,6 +461,7 @@ function DiffCodeEditor({
       cleanup = () => {
         clickDisposable.dispose();
         diffDecorations.clear();
+        discussionZoneRoots.forEach((root) => root.unmount());
         editor.dispose();
         model.dispose();
       };
@@ -466,43 +471,15 @@ function DiffCodeEditor({
       disposed = true;
       cleanup();
     };
-  }, [discussions, editorModel, file.filename]);
+  }, [discussionGroups, discussions, editorModel, file.filename]);
 
   return (
-    <div className="diff-editor-stack">
-      <div
-        ref={editorElementRef}
-        className="diff-editor"
-        style={{ height: `${editorHeight}px` }}
-        aria-label={`${file.filename} diff`}
-      />
-      <DiffDiscussionOverlay discussions={discussions} rows={editorModel.rows} />
-    </div>
-  );
-}
-
-function DiffDiscussionOverlay({
-  discussions,
-  rows,
-}: {
-  discussions: PullRequestDiscussion[];
-  rows: DiffRow[];
-}) {
-  const groups = discussionsByPosition(discussions, rows.length);
-  if (groups.length === 0) return null;
-
-  return (
-    <div className="diff-discussion-overlay" aria-hidden="true">
-      {groups.map(({ position, discussions: group }) => (
-        <div
-          key={position}
-          className="diff-discussion-anchor"
-          style={{ top: `${position * 18 + 8}px` }}
-        >
-          <InlineDiscussions discussions={group} />
-        </div>
-      ))}
-    </div>
+    <div
+      ref={editorElementRef}
+      className="diff-editor"
+      style={{ height: `${editorHeight}px` }}
+      aria-label={`${file.filename} diff`}
+    />
   );
 }
 
@@ -779,6 +756,36 @@ function discussionsByPosition(
   return [...grouped.entries()]
     .sort(([left], [right]) => left - right)
     .map(([position, group]) => ({ position, discussions: group }));
+}
+
+function applyDiffDiscussionZones(
+  editor: Monaco.editor.IStandaloneCodeEditor,
+  groups: Array<{ position: number; discussions: PullRequestDiscussion[] }>,
+): Root[] {
+  const roots: Root[] = [];
+  editor.changeViewZones((accessor) => {
+    for (const group of groups) {
+      const node = document.createElement("div");
+      node.className = "diff-discussion-zone";
+      const root = createRoot(node);
+      root.render(<InlineDiscussions discussions={group.discussions} />);
+      roots.push(root);
+
+      accessor.addZone({
+        afterLineNumber: group.position,
+        heightInPx: discussionGroupHeight(group.discussions),
+        domNode: node,
+      });
+    }
+  });
+  return roots;
+}
+
+function discussionGroupHeight(discussions: PullRequestDiscussion[]): number {
+  return discussions.reduce((height, discussion) => {
+    const bodyLines = Math.ceil(discussion.body.length / 90);
+    return height + Math.max(86, 70 + bodyLines * 18);
+  }, 8);
 }
 
 function InlineDiscussions({

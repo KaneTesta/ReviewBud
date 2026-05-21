@@ -543,11 +543,6 @@ a:focus-visible {
   background: var(--canvas);
 }
 
-.diff-editor-stack {
-  position: relative;
-  min-width: max-content;
-}
-
 .diff-editor .monaco-editor,
 .diff-editor .monaco-editor-background,
 .diff-editor .monaco-editor .margin {
@@ -572,22 +567,16 @@ a:focus-visible {
   box-shadow: inset 3px 0 0 rgb(245 202 66 / 0.9);
 }
 
-.diff-discussion-overlay {
-  position: absolute;
-  inset: 0 0 auto 0;
-  pointer-events: none;
+.diff-discussion-zone {
+  box-sizing: border-box;
+  overflow: auto;
+  padding-left: 64px;
+  padding-right: 14px;
+  background: var(--canvas);
 }
 
-.diff-discussion-anchor {
-  position: absolute;
-  left: 64px;
-  right: 14px;
-  z-index: 2;
-  pointer-events: auto;
-}
-
-.diff-discussion-anchor .inline-discussions {
-  padding-top: 0;
+.diff-discussion-zone .inline-discussions {
+  padding: 6px 0 10px;
 }
 
 .symbol-context {
