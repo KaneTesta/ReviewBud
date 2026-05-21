@@ -45,4 +45,36 @@ describe("resolveTypeScriptSymbolContext", () => {
     assert.equal(context.title, "loadPullRequest");
     assert.match(context.code, /export function loadPullRequest/);
   });
+
+  it("uses the clicked column when the same symbol appears earlier on the line", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "review-bud-ts-"));
+    await mkdir(path.join(root, "src"));
+    await writeFile(
+      path.join(root, "src", "usage.ts"),
+      [
+        "const buildLoader = () => undefined;",
+        "",
+        "export function run() {",
+        "  const loadPullRequest = () => undefined; return loadPullRequest();",
+        "}",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const context = await resolveTypeScriptSymbolContext(root, {
+      owner: "a",
+      repo: "b",
+      number: 1,
+      file: "src/usage.ts",
+      line: 4,
+      column: 51,
+      symbol: "loadPullRequest",
+    });
+
+    assert.ok(context);
+    assert.equal(context.source, "language-service");
+    assert.equal(context.title, "loadPullRequest");
+    assert.equal(context.startLine, 4);
+    assert.match(context.code, /const loadPullRequest = \(\) => undefined/);
+  });
 });

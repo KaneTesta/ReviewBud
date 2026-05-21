@@ -8,8 +8,6 @@ import {
   HelpCircle,
   Loader2,
   MessageSquareText,
-  PanelRightClose,
-  PanelRightOpen,
   RefreshCw,
   Search,
   X,
@@ -22,6 +20,12 @@ import type {
   ReviewWorkspace,
   SymbolContext,
 } from "../../shared/types";
+import {
+  discussionAffectsDiffPosition,
+  discussionStateLabels,
+  discussionsForFile,
+  shouldCollapseDiscussion,
+} from "../../shared/discussions";
 import { buildDiffRows, tokenizeCodeLine } from "../../shared/symbol-context";
 
 const defaultUrl = "";
@@ -34,11 +38,9 @@ export function App() {
   const [filter, setFilter] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
-  const [symbolContext, setSymbolContext] = useState<SymbolContext | null>(null);
+  const [symbolContexts, setSymbolContexts] = useState<SymbolContext[]>([]);
   const [symbolState, setSymbolState] = useState<"idle" | "loading" | "error">("idle");
   const [symbolError, setSymbolError] = useState<string | null>(null);
-  const [inspectorOpen, setInspectorOpen] = useState(true);
 
   useEffect(() => {
     void refreshRecent();
@@ -56,14 +58,10 @@ export function App() {
     return workspace.pullRequest.files.filter((file) => file.filename.toLowerCase().includes(needle));
   }, [filter, workspace]);
 
-  const activeNote = useMemo(() => {
-    if (!workspace || !currentFile) return null;
-    return workspace.notes.find((note) => note.file === currentFile.filename) ?? null;
-  }, [currentFile, workspace]);
-  const showSymbolSplit = symbolState === "loading" || symbolState === "error" || symbolContext !== null;
+  const showSymbolSplit = symbolState === "loading" || symbolState === "error" || symbolContexts.length > 0;
 
   function closeSymbolContext() {
-    setSymbolContext(null);
+    setSymbolContexts([]);
     setSymbolState("idle");
     setSymbolError(null);
   }
@@ -80,7 +78,7 @@ export function App() {
       const nextWorkspace = await window.prTool.loadPullRequest(nextUrl);
       setWorkspace(nextWorkspace);
       setSelectedFile(nextWorkspace.pullRequest.files[0]?.filename ?? null);
-      setSymbolContext(null);
+      setSymbolContexts([]);
       setSymbolState("idle");
       setSymbolError(null);
       setUrl(nextWorkspace.pullRequest.summary.url);
@@ -100,7 +98,7 @@ export function App() {
       const nextWorkspace = await window.prTool.openCached(id);
       setWorkspace(nextWorkspace);
       setSelectedFile(nextWorkspace.pullRequest.files[0]?.filename ?? null);
-      setSymbolContext(null);
+      setSymbolContexts([]);
       setSymbolState("idle");
       setSymbolError(null);
       setUrl(nextWorkspace.pullRequest.summary.url);
@@ -111,26 +109,14 @@ export function App() {
     }
   }
 
-  async function updateNote(file: string, patch: Partial<ReviewNote>) {
-    if (!workspace) return;
-    const notes = workspace.notes.map((note) => (note.file === file ? { ...note, ...patch } : note));
-    const nextWorkspace = { ...workspace, notes };
-    setWorkspace(nextWorkspace);
-    setSaveState("saving");
-
-    try {
-      await window.prTool.saveNotes(workspace.pullRequest.summary.id, notes);
-      setSaveState("saved");
-    } catch {
-      setSaveState("error");
-    }
-  }
-
-  async function openSymbolContext(file: string, line: number, symbol: string) {
+  async function openSymbolContext(file: string, line: number, column: number, symbol: string, append = false) {
     if (!workspace) return;
     const { summary } = workspace.pullRequest;
     setSymbolState("loading");
     setSymbolError(null);
+    if (!append) {
+      setSymbolContexts([]);
+    }
 
     try {
       const nextContext = await window.prTool.loadSymbolContext({
@@ -139,11 +125,12 @@ export function App() {
         number: summary.number,
         file,
         line,
+        column,
         symbol,
         headRepoFullName: summary.headRepoFullName,
         headSha: summary.headSha,
       });
-      setSymbolContext(nextContext);
+      setSymbolContexts((current) => (append ? [...current, nextContext] : [nextContext]));
       setSymbolState("idle");
     } catch (contextError) {
       setSymbolState("error");
@@ -183,7 +170,7 @@ export function App() {
 
       {error ? <div className="error-banner">{error}</div> : null}
 
-      <section className={inspectorOpen ? "workspace" : "workspace inspector-collapsed"}>
+      <section className="workspace">
         <aside className="sidebar">
           <RecentList recent={recent} onOpen={openCached} activeId={workspace?.pullRequest.summary.id ?? null} />
           {workspace ? (
@@ -202,13 +189,19 @@ export function App() {
         </aside>
 
         <section className="review-surface">
-          {workspace && currentFile && activeNote ? (
+          {workspace && currentFile ? (
             <>
               <PullRequestHeader workspace={workspace} />
               <div className={showSymbolSplit ? "review-columns split" : "review-columns"}>
                 <DiffViewer file={currentFile} discussions={workspace.pullRequest.discussions} onOpenSymbol={openSymbolContext} />
                 {showSymbolSplit ? (
-                  <SymbolContextPanel context={symbolContext} state={symbolState} error={symbolError} onClose={closeSymbolContext} />
+                  <SymbolContextPanel
+                    contexts={symbolContexts}
+                    state={symbolState}
+                    error={symbolError}
+                    onClose={closeSymbolContext}
+                    onOpenSymbol={(file, line, column, symbol) => openSymbolContext(file, line, column, symbol, true)}
+                  />
                 ) : null}
               </div>
             </>
@@ -216,29 +209,6 @@ export function App() {
             <Welcome />
           )}
         </section>
-
-        <aside className="right-rail">
-          {!inspectorOpen ? (
-            <button
-              type="button"
-              className="rail-toggle"
-              aria-label="Show inspector"
-              title="Show inspector"
-              onClick={() => setInspectorOpen(true)}
-            >
-              <PanelRightOpen size={17} aria-hidden="true" />
-            </button>
-          ) : workspace && currentFile && activeNote ? (
-            <Inspector
-              note={activeNote}
-              saveState={saveState}
-              onClose={() => setInspectorOpen(false)}
-              onChange={(patch) => void updateNote(currentFile.filename, patch)}
-            />
-          ) : (
-            <div className="quiet-panel">Load a pull request to see notes and discussions.</div>
-          )}
-        </aside>
       </section>
     </main>
   );
@@ -360,11 +330,12 @@ function DiffViewer({
 }: {
   file: PullRequestFile;
   discussions: PullRequestDiscussion[];
-  onOpenSymbol: (file: string, line: number, symbol: string) => void;
+  onOpenSymbol: (file: string, line: number, column: number, symbol: string) => void;
 }) {
   const rows = buildDiffRows(file.patch || "Diff omitted by GitHub API for this file.");
-  const fileDiscussions = discussions.filter((discussion) => discussion.path === file.filename || !discussion.path);
+  const fileDiscussions = discussionsForFile(discussions, file.filename);
   const topDiscussions = fileDiscussions.filter((discussion) => !discussion.position);
+  const [hoveredDiscussion, setHoveredDiscussion] = useState<PullRequestDiscussion | null>(null);
 
   return (
     <section className="diff-panel">
@@ -378,10 +349,14 @@ function DiffViewer({
       <div className="diff" role="region" aria-label={`Diff for ${file.filename}`}>
         {topDiscussions.length > 0 ? <InlineDiscussions discussions={topDiscussions} /> : null}
         {rows.map((row, index) => {
-          const rowDiscussions = fileDiscussions.filter((discussion) => discussion.position === index + 1);
+          const diffPosition = index + 1;
+          const rowDiscussions = fileDiscussions.filter((discussion) => discussionAffectsDiffPosition(discussion, diffPosition));
+          const isHighlighted = hoveredDiscussion
+            ? discussionAffectsDiffPosition(hoveredDiscussion, diffPosition)
+            : false;
           return (
             <div key={`${index}-${row.text.slice(0, 20)}`}>
-              <span className={diffLineClass(row.text)}>
+              <span className={diffLineClass(row.text, isHighlighted)}>
                 {tokenizeCodeLine(row.text || " ").map((token, tokenIndex) =>
                   token.kind === "identifier" && row.newLine ? (
                     <button
@@ -392,7 +367,7 @@ function DiffViewer({
                       onClick={(event) => {
                         if (!event.metaKey && !event.ctrlKey) return;
                         event.preventDefault();
-                        onOpenSymbol(file.filename, row.newLine!, token.text);
+                        onOpenSymbol(file.filename, row.newLine!, Math.max(1, token.startIndex), token.text);
                       }}
                     >
                       {token.text}
@@ -402,7 +377,12 @@ function DiffViewer({
                   ),
                 )}
               </span>
-              {rowDiscussions.length > 0 ? <InlineDiscussions discussions={rowDiscussions} /> : null}
+              {rowDiscussions.length > 0 ? (
+                <InlineDiscussions
+                  discussions={rowDiscussions}
+                  onHoverDiscussion={setHoveredDiscussion}
+                />
+              ) : null}
             </div>
           );
         })}
@@ -412,16 +392,20 @@ function DiffViewer({
 }
 
 function SymbolContextPanel({
-  context,
+  contexts,
   state,
   error,
   onClose,
+  onOpenSymbol,
 }: {
-  context: SymbolContext | null;
+  contexts: SymbolContext[];
   state: "idle" | "loading" | "error";
   error: string | null;
   onClose: () => void;
+  onOpenSymbol: (file: string, line: number, column: number, symbol: string) => void;
 }) {
+  const latestContext = contexts.at(-1) ?? null;
+
   return (
     <section className="panel symbol-context">
       <div className="panel-heading split">
@@ -430,10 +414,10 @@ function SymbolContextPanel({
           <span>
             {state === "loading"
               ? "Loading"
-              : context
-                ? context.source === "language-service"
+              : latestContext
+                ? latestContext.source === "language-service"
                   ? "Definition"
-                  : `${context.startLine}-${context.endLine}`
+                  : `${latestContext.startLine}-${latestContext.endLine}`
                 : "Cmd-click"}
           </span>
           <button type="button" className="icon-button" aria-label="Close context pane" title="Close context pane" onClick={onClose}>
@@ -442,21 +426,48 @@ function SymbolContextPanel({
         </div>
       </div>
       {state === "error" ? <p className="context-error">{error ?? "Could not load symbol context."}</p> : null}
-      {context ? (
-        <>
-          <div className="context-title">
-            <strong>{context.title}</strong>
-            <span>{context.file} · lines {context.startLine}-{context.endLine}</span>
-          </div>
-          <pre className="context-code">
-            {context.code.split("\n").map((line, index) => (
-              <span key={`${context.startLine + index}-${line}`}>
-                <span className="context-line-number">{context.startLine + index}</span>
-                <span>{line || " "}</span>
-              </span>
-            ))}
-          </pre>
-        </>
+      {contexts.length > 0 ? (
+        <div className="context-stack">
+          {contexts.map((context, contextIndex) => (
+            <article className="context-entry" key={`${context.file}-${context.startLine}-${context.symbol}-${contextIndex}`}>
+              <div className="context-title">
+                <strong>{context.title}</strong>
+                <span>{context.file} · lines {context.startLine}-{context.endLine}</span>
+              </div>
+              <pre className="context-code">
+                {context.code.split("\n").map((line, index) => {
+                  const lineNumber = context.startLine + index;
+                  return (
+                    <span key={`${lineNumber}-${line}`}>
+                      <span className="context-line-number">{lineNumber}</span>
+                      <span>
+                        {tokenizeCodeLine(line || " ").map((token, tokenIndex) =>
+                          token.kind === "identifier" ? (
+                            <button
+                              key={`${tokenIndex}-${token.text}`}
+                              type="button"
+                              className="code-token"
+                              title={`Cmd-click to inspect ${token.text}`}
+                              onClick={(event) => {
+                                if (!event.metaKey && !event.ctrlKey) return;
+                                event.preventDefault();
+                                onOpenSymbol(context.file, lineNumber, token.startIndex + 1, token.text);
+                              }}
+                            >
+                              {token.text}
+                            </button>
+                          ) : (
+                            <span key={`${tokenIndex}-${token.text}`}>{token.text}</span>
+                          ),
+                        )}
+                      </span>
+                    </span>
+                  );
+                })}
+              </pre>
+            </article>
+          ))}
+        </div>
       ) : state !== "error" ? (
         <p className="muted">Cmd-click an identifier in the diff to inspect its implementation here.</p>
       ) : null}
@@ -464,61 +475,59 @@ function SymbolContextPanel({
   );
 }
 
-function Inspector({
-  note,
-  saveState,
-  onClose,
-  onChange,
+function InlineDiscussions({
+  discussions,
+  onHoverDiscussion,
 }: {
-  note: ReviewNote;
-  saveState: "idle" | "saving" | "saved" | "error";
-  onClose: () => void;
-  onChange: (patch: Partial<ReviewNote>) => void;
+  discussions: PullRequestDiscussion[];
+  onHoverDiscussion?: (discussion: PullRequestDiscussion | null) => void;
 }) {
   return (
-    <section className="panel inspector">
-      <div className="panel-heading split">
-        <h2>Inspector</h2>
-        <div className="heading-actions">
-          <span className={saveState === "error" ? "save-error" : "save-state"}>{saveLabel(saveState)}</span>
-          <button type="button" className="icon-button" aria-label="Hide inspector" title="Hide inspector" onClick={onClose}>
-            <PanelRightClose size={15} aria-hidden="true" />
-          </button>
-        </div>
-      </div>
-      <label className="field">
-        Status
-        <select value={note.status} onChange={(event) => onChange({ status: event.target.value as ReviewNote["status"] })}>
-          <option value="unread">Unread</option>
-          <option value="reviewing">Reviewing</option>
-          <option value="question">Question</option>
-          <option value="done">Done</option>
-        </select>
-      </label>
-      <label className="field stretch">
-        Local note
-        <textarea
-          value={note.note}
-          onChange={(event) => onChange({ note: event.target.value })}
-          placeholder="Capture what matters before you leave the file."
-        />
-      </label>
-    </section>
-  );
-}
-
-function InlineDiscussions({ discussions }: { discussions: PullRequestDiscussion[] }) {
-  return (
     <div className="inline-discussions">
-      {discussions.map((discussion) => (
-        <article key={discussion.id} className="discussion">
+      {discussions.map((discussion) => {
+        const labels = discussionStateLabels(discussion);
+        const heading = (
           <div className="discussion-heading">
             <MessageSquareText size={15} aria-hidden="true" />
             <strong>{discussion.author}</strong>
+            {labels.length > 0 ? (
+              <span className="discussion-chips" aria-label={labels.join(", ")}>
+                {labels.map((label) => (
+                  <span key={label} className="discussion-chip">
+                    {label}
+                  </span>
+                ))}
+              </span>
+            ) : null}
           </div>
-          <p>{discussion.body}</p>
-        </article>
-      ))}
+        );
+
+        return shouldCollapseDiscussion(discussion) ? (
+          <details
+            key={discussion.id}
+            className="discussion discussion-collapsed"
+            onMouseEnter={() => onHoverDiscussion?.(discussion)}
+            onMouseLeave={() => onHoverDiscussion?.(null)}
+            onFocus={() => onHoverDiscussion?.(discussion)}
+            onBlur={() => onHoverDiscussion?.(null)}
+          >
+            <summary>{heading}</summary>
+            <p>{discussion.body}</p>
+          </details>
+        ) : (
+          <article
+            key={discussion.id}
+            className="discussion"
+            onMouseEnter={() => onHoverDiscussion?.(discussion)}
+            onMouseLeave={() => onHoverDiscussion?.(null)}
+            onFocus={() => onHoverDiscussion?.(discussion)}
+            onBlur={() => onHoverDiscussion?.(null)}
+          >
+            {heading}
+            <p>{discussion.body}</p>
+          </article>
+        );
+      })}
     </div>
   );
 }
@@ -542,16 +551,11 @@ function Welcome() {
   );
 }
 
-function diffLineClass(line: string): string {
-  if (line.startsWith("+") && !line.startsWith("+++")) return "diff-line added";
-  if (line.startsWith("-") && !line.startsWith("---")) return "diff-line removed";
-  if (line.startsWith("@@")) return "diff-line hunk";
-  return "diff-line";
-}
-
-function saveLabel(saveState: "idle" | "saving" | "saved" | "error"): string {
-  if (saveState === "saving") return "Saving";
-  if (saveState === "saved") return "Saved";
-  if (saveState === "error") return "Save failed";
-  return "Local";
+function diffLineClass(line: string, isHighlighted = false): string {
+  const classes = ["diff-line"];
+  if (line.startsWith("+") && !line.startsWith("+++")) classes.push("added");
+  if (line.startsWith("-") && !line.startsWith("---")) classes.push("removed");
+  if (line.startsWith("@@")) classes.push("hunk");
+  if (isHighlighted) classes.push("comment-highlight");
+  return classes.join(" ");
 }

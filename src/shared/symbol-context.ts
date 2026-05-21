@@ -1,5 +1,7 @@
 import type { DiffRow, SymbolContext, SymbolContextRequest } from "./types";
 
+export type CodeLineToken = { kind: "identifier" | "text"; text: string; startIndex: number };
+
 const identifierPattern = /[$A-Z_a-z][$\w]*/g;
 const ignoredIdentifiers = new Set([
   "as",
@@ -52,24 +54,24 @@ export function buildDiffRows(patch: string): DiffRow[] {
   });
 }
 
-export function tokenizeCodeLine(line: string): Array<{ kind: "identifier" | "text"; text: string }> {
-  const tokens: Array<{ kind: "identifier" | "text"; text: string }> = [];
+export function tokenizeCodeLine(line: string): CodeLineToken[] {
+  const tokens: CodeLineToken[] = [];
   let index = 0;
 
   for (const match of line.matchAll(identifierPattern)) {
     const matchIndex = match.index ?? 0;
     if (matchIndex > index) {
-      tokens.push({ kind: "text", text: line.slice(index, matchIndex) });
+      tokens.push({ kind: "text", text: line.slice(index, matchIndex), startIndex: index });
     }
-    tokens.push({ kind: "identifier", text: match[0] });
+    tokens.push({ kind: "identifier", text: match[0], startIndex: matchIndex });
     index = matchIndex + match[0].length;
   }
 
   if (index < line.length) {
-    tokens.push({ kind: "text", text: line.slice(index) });
+    tokens.push({ kind: "text", text: line.slice(index), startIndex: index });
   }
 
-  return tokens.length > 0 ? tokens : [{ kind: "text", text: line }];
+  return tokens.length > 0 ? tokens : [{ kind: "text", text: line, startIndex: 0 }];
 }
 
 export function inferIdentifier(line: string): string | null {

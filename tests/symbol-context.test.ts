@@ -33,6 +33,7 @@ describe("tokenizeCodeLine", () => {
       tokens.filter((token) => token.kind === "identifier").map((token) => token.text),
       ["export", "function", "loadPullRequest", "url", "string"],
     );
+    assert.equal(tokens.find((token) => token.text === "loadPullRequest")?.startIndex, 17);
   });
 });
 

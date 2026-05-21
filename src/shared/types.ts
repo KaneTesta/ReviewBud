@@ -39,6 +39,8 @@ export interface PullRequestDiscussion {
   body: string;
   path?: string;
   position?: number;
+  isResolved?: boolean;
+  isOutdated?: boolean;
   createdAt: string;
   url: string;
   kind: "review" | "comment";
@@ -86,6 +88,7 @@ export interface SymbolContextRequest {
   number: number;
   file: string;
   line: number;
+  column?: number;
   symbol: string;
   headRepoFullName?: string;
   headSha?: string;

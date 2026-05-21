@@ -46,6 +46,29 @@ interface GraphQLReviewDecisionResponse {
   };
 }
 
+interface GraphQLReviewThreadsResponse {
+  repository?: {
+    pullRequest?: {
+      reviewThreads?: {
+        nodes?: Array<{
+          isResolved: boolean;
+          isOutdated: boolean;
+          comments: {
+            nodes?: Array<{
+              databaseId?: number | null;
+            } | null> | null;
+          };
+        } | null> | null;
+      };
+    };
+  };
+}
+
+interface ReviewThreadState {
+  isResolved: boolean;
+  isOutdated: boolean;
+}
+
 interface GitHubFileResponse {
   filename: string;
   status: string;
@@ -108,13 +131,14 @@ function formatGhError(error: unknown): string {
 
 export async function fetchPullRequest(ref: PullRequestRef): Promise<CachedPullRequest> {
   const path = `repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`;
-  const [pr, files, reviews, comments, diff, reviewDecision] = await Promise.all([
+  const [pr, files, reviews, comments, diff, reviewDecision, reviewThreadStates] = await Promise.all([
     ghJson<GitHubPullResponse>([path]),
     ghJson<GitHubFileResponse[]>([`${path}/files`, "--paginate"]),
     ghJson<GitHubReviewResponse[]>([`${path}/reviews`, "--paginate"]),
     ghJson<GitHubCommentResponse[]>([`${path}/comments`, "--paginate"]),
     ghText([path, "-H", "Accept: application/vnd.github.v3.diff"]),
     fetchReviewDecision(ref),
+    fetchReviewThreadStates(ref),
   ]);
 
   return {
@@ -122,7 +146,7 @@ export async function fetchPullRequest(ref: PullRequestRef): Promise<CachedPullR
     files: files.map(normalizeFile),
     discussions: [
       ...reviews.filter((review) => review.body?.trim()).map(normalizeReview),
-      ...comments.map(normalizeComment),
+      ...comments.map((comment) => normalizeComment(comment, reviewThreadStates.get(comment.id))),
     ].sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
     diff,
     loadedAt: new Date().toISOString(),
@@ -200,6 +224,58 @@ async function fetchReviewDecision(ref: PullRequestRef): Promise<string | null> 
   }
 }
 
+async function fetchReviewThreadStates(ref: PullRequestRef): Promise<Map<number, ReviewThreadState>> {
+  const query = `
+    query($owner: String!, $repo: String!, $number: Int!) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $number) {
+          reviewThreads(first: 100) {
+            nodes {
+              isResolved
+              isOutdated
+              comments(first: 100) {
+                nodes {
+                  databaseId
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  try {
+    const response = await ghJson<GraphQLReviewThreadsResponse>([
+      "graphql",
+      "-f",
+      `query=${query}`,
+      "-F",
+      `owner=${ref.owner}`,
+      "-F",
+      `repo=${ref.repo}`,
+      "-F",
+      `number=${ref.number}`,
+    ]);
+
+    const states = new Map<number, ReviewThreadState>();
+    for (const thread of response.repository?.pullRequest?.reviewThreads?.nodes ?? []) {
+      if (!thread) continue;
+      for (const comment of thread.comments.nodes ?? []) {
+        if (comment?.databaseId == null) continue;
+        states.set(comment.databaseId, {
+          isResolved: thread.isResolved,
+          isOutdated: thread.isOutdated,
+        });
+      }
+    }
+
+    return states;
+  } catch {
+    return new Map();
+  }
+}
+
 function normalizeSummary(
   ref: PullRequestRef,
   pr: GitHubPullResponse,
@@ -253,13 +329,15 @@ function normalizeReview(review: GitHubReviewResponse): PullRequestDiscussion {
   };
 }
 
-function normalizeComment(comment: GitHubCommentResponse): PullRequestDiscussion {
+function normalizeComment(comment: GitHubCommentResponse, threadState?: ReviewThreadState): PullRequestDiscussion {
   return {
     id: `comment-${comment.id}`,
     author: comment.user?.login ?? "unknown",
     body: comment.body ?? "",
     path: comment.path,
     position: comment.position ?? undefined,
+    isResolved: threadState?.isResolved,
+    isOutdated: threadState?.isOutdated,
     createdAt: comment.created_at,
     url: comment.html_url ?? "",
     kind: "comment",

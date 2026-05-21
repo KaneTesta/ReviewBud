@@ -17,7 +17,7 @@ export async function resolveTypeScriptSymbolContext(
 
   const targetFile = path.join(snapshotPath, request.file);
   const targetSource = await readFile(targetFile, "utf8");
-  const position = positionForSymbol(targetSource, request.line, request.symbol);
+  const position = positionForSymbol(targetSource, request);
   if (position == null) {
     return null;
   }
@@ -96,15 +96,18 @@ async function collectSourceFilesInto(directory: string, files: string[]): Promi
   }
 }
 
-function positionForSymbol(source: string, line: number, symbol: string): number | null {
+function positionForSymbol(source: string, request: Pick<SymbolContextRequest, "line" | "column" | "symbol">): number | null {
   const lines = source.split("\n");
-  const lineText = lines[line - 1];
+  const lineText = lines[request.line - 1];
   if (lineText == null) return null;
 
-  const symbolIndex = lineText.indexOf(symbol);
+  const requestedIndex = request.column == null ? null : Math.max(0, request.column - 1);
+  const symbolIndex = requestedIndex != null && lineText.slice(requestedIndex, requestedIndex + request.symbol.length) === request.symbol
+    ? requestedIndex
+    : lineText.indexOf(request.symbol);
   if (symbolIndex < 0) return null;
 
-  return lines.slice(0, line - 1).reduce((sum, item) => sum + item.length + 1, 0) + symbolIndex;
+  return lines.slice(0, request.line - 1).reduce((sum, item) => sum + item.length + 1, 0) + symbolIndex;
 }
 
 function lineForPosition(source: string, position: number): number {
