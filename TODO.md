@@ -1,3 +1,4 @@
--   Make closed PRs have a red icon in the list repos view
--   Allow you to reply to comments
--   Allow you to star repos locally and these show up at the top of your search
+- Make closed PRs have a red icon in the list repos view
+- Allow you to reply to comments
+- Allow you to star repos locally and these show up at the top of your search
+- Allow you to scroll up and down through the left pane code with just up or down keys
