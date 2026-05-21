@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  discussionAffectsDiffRow,
   discussionAffectsDiffPosition,
   discussionStateLabels,
   discussionsForFile,
@@ -86,5 +87,69 @@ describe("discussionsForFile", () => {
 
     assert.equal(discussionAffectsDiffPosition(discussion, 3), true);
     assert.equal(discussionAffectsDiffPosition(discussion, 4), false);
+  });
+
+  it("prefers GitHub right-side line numbers over ambiguous diff positions", () => {
+    const discussion: PullRequestDiscussion = {
+      id: "comment-1",
+      author: "teammate",
+      body: "This belongs on the changed code line.",
+      path: "src/app.ts",
+      position: 1,
+      line: 42,
+      side: "RIGHT",
+      createdAt: "2026-05-21T00:01:00Z",
+      url: "https://github.com/owner/repo/pull/1#discussion_r1",
+      kind: "comment",
+    };
+
+    assert.equal(
+      discussionAffectsDiffRow(discussion, {
+        text: "@@ -1,1 +40,3 @@",
+        kind: "hunk",
+        diffPosition: 1,
+      }),
+      false,
+    );
+    assert.equal(
+      discussionAffectsDiffRow(discussion, {
+        text: "+const value = 1;",
+        kind: "added",
+        diffPosition: 5,
+        newLine: 42,
+      }),
+      true,
+    );
+  });
+
+  it("matches GitHub left-side comments to removed lines", () => {
+    const discussion: PullRequestDiscussion = {
+      id: "comment-1",
+      author: "teammate",
+      body: "This belongs on the removed code line.",
+      path: "src/app.ts",
+      line: 10,
+      side: "LEFT",
+      createdAt: "2026-05-21T00:01:00Z",
+      url: "https://github.com/owner/repo/pull/1#discussion_r1",
+      kind: "comment",
+    };
+
+    assert.equal(
+      discussionAffectsDiffRow(discussion, {
+        text: "-const value = 0;",
+        kind: "removed",
+        oldLine: 10,
+      }),
+      true,
+    );
+    assert.equal(
+      discussionAffectsDiffRow(discussion, {
+        text: "+const value = 1;",
+        kind: "added",
+        newLine: 10,
+      }),
+      false,
+    );
   });
 });

@@ -4,6 +4,17 @@ import { registerIpcHandlers } from "./ipc.js";
 
 const isDev =
   process.env.VITE_DEV_SERVER_URL || process.env.NODE_ENV === "development";
+const isWindows = process.platform === "win32";
+const titleBarThemes = {
+  dark: {
+    color: "#010102",
+    symbolColor: "#f7f8f8",
+  },
+  light: {
+    color: "#f4f6f8",
+    symbolColor: "#151922",
+  },
+} as const;
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -13,6 +24,16 @@ function createWindow(): void {
     minHeight: 720,
     title: "review bud",
     backgroundColor: "#010102",
+    autoHideMenuBar: true,
+    ...(isWindows
+      ? {
+          titleBarStyle: "hidden",
+          titleBarOverlay: {
+            ...titleBarThemes.dark,
+            height: 40,
+          },
+        }
+      : {}),
     webPreferences: {
       preload: path.join(__dirname, "../preload/index.js"),
       nodeIntegration: false,
@@ -20,6 +41,7 @@ function createWindow(): void {
       sandbox: false,
     },
   });
+  mainWindow.setMenu(null);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url);

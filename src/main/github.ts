@@ -4,8 +4,10 @@ import type {
   CachedPullRequest,
   PullRequestDiscussion,
   PullRequestFile,
+  PullRequestListItem,
   PullRequestRef,
   PullRequestSummary,
+  RepositorySummary,
   SymbolContext,
   SymbolContextRequest,
 } from "../shared/types.js";
@@ -93,6 +95,10 @@ interface GitHubCommentResponse {
   body?: string | null;
   path?: string;
   position?: number | null;
+  line?: number | null;
+  side?: "LEFT" | "RIGHT" | null;
+  start_line?: number | null;
+  start_side?: "LEFT" | "RIGHT" | null;
   created_at: string;
   html_url?: string;
 }
@@ -154,6 +160,115 @@ export async function fetchPullRequest(ref: PullRequestRef): Promise<CachedPullR
   };
 }
 
+export async function fetchRecentRepositories(): Promise<RepositorySummary[]> {
+  const repositories = await ghJson<GitHubRepositoryResponse[]>([
+    "graphql",
+    "-f",
+    `query={
+      viewer {
+        repositories(first: 30, orderBy: {field: UPDATED_AT, direction: DESC}, ownerAffiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER]) {
+          nodes {
+            nameWithOwner
+            description
+            updatedAt
+          }
+        }
+      }
+    }`,
+    "--jq",
+    ".data.viewer.repositories.nodes",
+  ]);
+
+  return repositories
+    .map((repository) => {
+      const [owner, repo] = repository.nameWithOwner.split("/");
+      return {
+        fullName: repository.nameWithOwner,
+        owner: owner ?? "",
+        repo: repo ?? "",
+        description: repository.description ?? "",
+        updatedAt: repository.updatedAt,
+      };
+    })
+    .filter((repository) => repository.owner && repository.repo);
+}
+
+export async function searchRepositories(
+  query: string,
+  owner = "",
+): Promise<RepositorySummary[]> {
+  const searchQuery = buildRepositorySearchQuery(query, owner);
+  if (!searchQuery) {
+    return fetchRecentRepositories();
+  }
+
+  const response = await ghJson<GitHubRepositorySearchResponse>([
+    "search/repositories",
+    "--method",
+    "GET",
+    "-f",
+    `q=${searchQuery}`,
+    "-f",
+    "sort=updated",
+    "-f",
+    "order=desc",
+    "-f",
+    "per_page=50",
+  ]);
+
+  return (response.items ?? [])
+    .map((repository) => ({
+      fullName: repository.full_name,
+      owner: repository.owner?.login ?? repository.full_name.split("/")[0] ?? "",
+      repo: repository.name,
+      description: repository.description ?? "",
+      updatedAt: repository.updated_at,
+    }))
+    .filter((repository) => repository.owner && repository.repo);
+}
+
+export function buildRepositorySearchQuery(query: string, owner = ""): string {
+  const normalizedQuery = query.trim();
+  const normalizedOwner = owner.trim();
+  const parts = [
+    normalizedQuery || "stars:>=0",
+    "fork:true",
+    normalizedOwner ? `user:${normalizedOwner}` : "",
+  ].filter(Boolean);
+
+  return parts.join(" ");
+}
+
+export async function fetchRecentPullRequests(
+  ref: Pick<PullRequestRef, "owner" | "repo">,
+): Promise<PullRequestListItem[]> {
+  const pulls = await ghJson<GitHubPullListResponse[]>([
+    `repos/${ref.owner}/${ref.repo}/pulls`,
+    "--method",
+    "GET",
+    "-f",
+    "state=all",
+    "-f",
+    "sort=updated",
+    "-f",
+    "direction=desc",
+    "-f",
+    "per_page=20",
+  ]);
+
+  return pulls.map((pull) => ({
+    owner: ref.owner,
+    repo: ref.repo,
+    number: pull.number,
+    id: pullRequestId({ owner: ref.owner, repo: ref.repo, number: pull.number }),
+    url: pull.html_url,
+    title: pull.title,
+    state: pull.state,
+    author: pull.user?.login ?? "unknown",
+    updatedAt: pull.updated_at,
+  }));
+}
+
 export async function fetchSymbolContext(request: SymbolContextRequest, userDataPath: string): Promise<SymbolContext> {
   const pr = request.headRepoFullName && request.headSha
     ? null
@@ -198,6 +313,53 @@ export async function fetchSymbolContext(request: SymbolContextRequest, userData
     sourceCode: source,
     source: "raw-file",
   };
+}
+
+interface GitHubRepositoryResponse {
+  nameWithOwner: string;
+  description?: string | null;
+  updatedAt: string;
+}
+
+interface GitHubPullListResponse {
+  html_url: string;
+  number: number;
+  title: string;
+  state: string;
+  user?: { login?: string };
+  updated_at: string;
+}
+
+interface GitHubRepositorySearchResponse {
+  items?: Array<{
+    full_name: string;
+    name: string;
+    owner?: { login?: string };
+    description?: string | null;
+    updated_at: string;
+  }>;
+}
+
+export async function fetchFileSource(request: SymbolContextRequest): Promise<string> {
+  const pr = request.headRepoFullName && request.headSha
+    ? null
+    : await ghJson<GitHubPullResponse>([`repos/${request.owner}/${request.repo}/pulls/${request.number}`]);
+  const headRepoFullName = request.headRepoFullName ?? pr?.head?.repo?.full_name ?? `${request.owner}/${request.repo}`;
+  const headSha = request.headSha ?? pr?.head?.sha;
+
+  if (!headSha) {
+    throw new Error("Could not determine the PR head SHA for source lookup.");
+  }
+
+  return ghText([
+    `repos/${headRepoFullName}/contents/${encodeContentPath(request.file)}`,
+    "--method",
+    "GET",
+    "-f",
+    `ref=${headSha}`,
+    "-H",
+    "Accept: application/vnd.github.raw",
+  ]);
 }
 
 async function fetchReviewDecision(ref: PullRequestRef): Promise<string | null> {
@@ -342,6 +504,10 @@ function normalizeComment(comment: GitHubCommentResponse, threadState?: ReviewTh
     body: comment.body ?? "",
     path: comment.path,
     position: comment.position ?? undefined,
+    line: comment.line ?? undefined,
+    side: comment.side ?? undefined,
+    startLine: comment.start_line ?? undefined,
+    startSide: comment.start_side ?? undefined,
     isResolved: threadState?.isResolved,
     isOutdated: threadState?.isOutdated,
     createdAt: comment.created_at,

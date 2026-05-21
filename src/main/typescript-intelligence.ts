@@ -36,7 +36,7 @@ export async function resolveTypeScriptSymbolContext(
 
   const definitionSource = await readFile(definition.fileName, "utf8");
   const line = lineForPosition(definitionSource, definition.textSpan.start);
-  const file = path.relative(snapshotPath, definition.fileName);
+  const file = path.relative(snapshotPath, definition.fileName).split(path.sep).join("/");
 
   return {
     ...extractSymbolContext(definitionSource, {

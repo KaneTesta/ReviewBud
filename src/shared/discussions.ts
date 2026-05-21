@@ -1,4 +1,4 @@
-import type { PullRequestDiscussion } from "./types";
+import type { DiffRow, PullRequestDiscussion } from "./types";
 
 export function discussionsForFile(
   discussions: PullRequestDiscussion[],
@@ -12,6 +12,19 @@ export function discussionAffectsDiffPosition(
   position: number,
 ): boolean {
   return discussion.position === position;
+}
+
+export function discussionAffectsDiffRow(
+  discussion: PullRequestDiscussion,
+  row: DiffRow,
+): boolean {
+  if (discussion.line != null) {
+    return discussion.side === "LEFT"
+      ? row.oldLine === discussion.line
+      : row.newLine === discussion.line;
+  }
+
+  return row.diffPosition != null && discussionAffectsDiffPosition(discussion, row.diffPosition);
 }
 
 export function shouldCollapseDiscussion(discussion: PullRequestDiscussion): boolean {

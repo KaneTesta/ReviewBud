@@ -7,33 +7,91 @@ const identifierPattern = /[$A-Z_a-z][$\w]*/g;
 export function buildDiffRows(patch: string): DiffRow[] {
   let oldLine = 0;
   let newLine = 0;
+  let hasSeenHunk = false;
 
-  return patch.split("\n").map((text) => {
+  return patch.split("\n").map((text, index) => {
+    const diffPosition = index + 1;
     const hunk = text.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
     if (hunk) {
-      oldLine = Number(hunk[1]);
-      newLine = Number(hunk[2]);
-      return { text, kind: "hunk" };
+      const nextOldLine = Number(hunk[1]);
+      const nextNewLine = Number(hunk[2]);
+      const collapsedLines = hasSeenHunk ? Math.max(nextOldLine - oldLine, nextNewLine - newLine) : 0;
+      const collapsedOldStart = oldLine;
+      const collapsedNewStart = newLine;
+      oldLine = nextOldLine;
+      newLine = nextNewLine;
+      hasSeenHunk = true;
+      return {
+        text,
+        kind: "hunk",
+        diffPosition,
+        ...(collapsedLines > 0 ? { collapsedLines, collapsedOldStart, collapsedNewStart } : {}),
+      };
     }
 
     if (text.startsWith("+") && !text.startsWith("+++")) {
-      return { text, kind: "added", newLine: newLine++ };
+      return { text, kind: "added", diffPosition, newLine: newLine++ };
     }
 
     if (text.startsWith("-") && !text.startsWith("---")) {
-      return { text, kind: "removed", oldLine: oldLine++ };
+      return { text, kind: "removed", diffPosition, oldLine: oldLine++ };
     }
 
-    const row: DiffRow = { text, kind: "context", oldLine, newLine };
+    const row: DiffRow = { text, kind: "context", diffPosition, oldLine, newLine };
     oldLine += 1;
     newLine += 1;
     return row;
   });
 }
 
+export function collapsedDiffRowKey(row: DiffRow): string | null {
+  if (!row.collapsedLines || !row.collapsedOldStart || !row.collapsedNewStart) {
+    return null;
+  }
+
+  return `${row.collapsedOldStart}:${row.collapsedNewStart}:${row.collapsedLines}`;
+}
+
+export function expandCollapsedDiffRows(
+  rows: DiffRow[],
+  source: string,
+  expandedKeys: ReadonlySet<string>,
+): DiffRow[] {
+  const sourceLines = source.split("\n");
+
+  return rows.flatMap((row) => {
+    const key = collapsedDiffRowKey(row);
+    if (!key || !expandedKeys.has(key) || !row.collapsedLines || !row.collapsedOldStart || !row.collapsedNewStart) {
+      return [row];
+    }
+
+    const collapsedLines = row.collapsedLines;
+    const collapsedOldStart = row.collapsedOldStart;
+    const collapsedNewStart = row.collapsedNewStart;
+    const expandedRows = Array.from({ length: collapsedLines }, (_, index): DiffRow => {
+      const oldLine = collapsedOldStart + index;
+      const newLine = collapsedNewStart + index;
+      return {
+        text: ` ${sourceLines[newLine - 1] ?? ""}`,
+        kind: "context",
+        oldLine,
+        newLine,
+      };
+    });
+
+    return [{ ...row, collapsedExpanded: true }, ...expandedRows];
+  });
+}
+
 export function displayDiffLine(row: DiffRow): string {
   if (row.kind === "hunk") {
-    return row.text.match(/^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@\s?(.*)$/)?.[1] ?? row.text;
+    const label = row.text.match(/^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@\s?(.*)$/)?.[1] ?? row.text;
+    if (label) return label;
+    if (row.collapsedLines) {
+      const action = row.collapsedExpanded ? "collapse" : "expand";
+      return `${row.collapsedLines} unchanged ${row.collapsedLines === 1 ? "line" : "lines"} - click to ${action}`;
+    }
+    return "";
   }
 
   if (/^[ +\-]/.test(row.text)) return row.text.slice(1);

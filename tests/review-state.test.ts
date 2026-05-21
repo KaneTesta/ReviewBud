@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   adjacentFile,
+  completedAllFiles,
   createDraftReview,
   reviewProgress,
   toggleFileViewed,
@@ -105,6 +106,21 @@ describe("review state helpers", () => {
         { file: "src/b.ts", status: "unread", note: "" },
       ]),
       { viewed: 1, total: 2 },
+    );
+  });
+
+  it("detects the transition when every file has been viewed", () => {
+    assert.equal(
+      completedAllFiles({ viewed: 1, total: 2 }, { viewed: 2, total: 2 }),
+      true,
+    );
+    assert.equal(
+      completedAllFiles({ viewed: 2, total: 2 }, { viewed: 2, total: 2 }),
+      false,
+    );
+    assert.equal(
+      completedAllFiles(null, { viewed: 0, total: 0 }),
+      false,
     );
   });
 });

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import type * as Monaco from "monaco-editor";
 import { createRoot, type Root } from "react-dom/client";
 import ReactMarkdown from "react-markdown";
@@ -10,9 +10,9 @@ import {
   CheckCircle2,
   Eye,
   FileCode2,
+  GitBranch,
   GitPullRequestArrow,
   GitPullRequest,
-  MessageSquarePlus,
   Loader2,
   Moon,
   MessageSquareText,
@@ -26,12 +26,15 @@ import type {
   DraftReviewSubmission,
   PullRequestDiscussion,
   PullRequestFile,
+  PullRequestListItem,
+  RepositorySummary,
   ReviewOutcome,
   ReviewWorkspace,
   SymbolContext,
   DiffRow,
 } from "../../shared/types";
 import {
+  discussionAffectsDiffRow,
   discussionAffectsDiffPosition,
   discussionStateLabels,
   discussionsForFile,
@@ -39,17 +42,21 @@ import {
 } from "../../shared/discussions";
 import {
   buildDiffRows,
+  collapsedDiffRowKey,
   displayDiffLine,
+  expandCollapsedDiffRows,
   tokenizeCodeLine,
 } from "../../shared/symbol-context";
 import {
   adjacentFile,
+  completedAllFiles,
   createDraftReview,
   reviewProgress,
   toggleFileViewed,
   upsertDraftComment,
   withReviewState,
 } from "../../shared/review-state";
+import { filterRepositories, repositoryOwners } from "../../shared/repositories";
 
 const defaultUrl = "";
 const themeStorageKey = "pr-tool-theme";
@@ -96,6 +103,10 @@ const nonClickableSymbols = new Set([
 let monacoThemeDefined = false;
 type ThemeMode = keyof typeof monacoThemes;
 type MonacoApi = typeof import("monaco-editor/esm/vs/editor/editor.api.js");
+const minContextEditorHeight = 96;
+const maxContextEditorHeight = 900;
+const minSplitPanePercent = 24;
+const maxSplitPanePercent = 76;
 type LineSelection = {
   file: string;
   startLine: number;
@@ -115,6 +126,12 @@ function loadMonaco(): Promise<MonacoApi> {
 export function App() {
   const [theme, setTheme] = useState<ThemeMode>(() => initialTheme());
   const [url, setUrl] = useState(defaultUrl);
+  const [repositories, setRepositories] = useState<RepositorySummary[]>([]);
+  const [selectedRepository, setSelectedRepository] = useState<RepositorySummary | null>(null);
+  const [pullRequests, setPullRequests] = useState<PullRequestListItem[]>([]);
+  const [repoListState, setRepoListState] = useState<"idle" | "loading" | "error">("idle");
+  const [prListState, setPrListState] = useState<"idle" | "loading" | "error">("idle");
+  const [repoListError, setRepoListError] = useState<string | null>(null);
   const [workspace, setWorkspace] = useState<ReviewWorkspace | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -124,14 +141,34 @@ export function App() {
     "idle",
   );
   const [symbolError, setSymbolError] = useState<string | null>(null);
-  const [commentMode, setCommentMode] = useState(false);
   const [commentSelection, setCommentSelection] = useState<LineSelection>(null);
   const [finishReviewOpen, setFinishReviewOpen] = useState(false);
+  const [fileSources, setFileSources] = useState<Record<string, string>>({});
+  const [expandedDiffGaps, setExpandedDiffGaps] = useState<Record<string, string[]>>({});
+  const [contextPanePercent, setContextPanePercent] = useState(50);
+  const reviewColumnsRef = useRef<HTMLDivElement | null>(null);
+  const previousReviewProgressRef = useRef<ReturnType<typeof reviewProgress> | null>(
+    null,
+  );
+
+  useEffect(() => {
+    document.documentElement.dataset.platform = navigator.platform;
+  }, []);
+
+  useEffect(() => {
+    if (canListRepositories()) {
+      void loadRepositories();
+    } else {
+      setRepoListState("error");
+      setRepoListError("Restart ReviewBud to enable repository and PR selection. Direct PR URL loading is still available.");
+    }
+  }, []);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     document.documentElement.style.colorScheme = theme;
     window.localStorage.setItem(themeStorageKey, theme);
+    void window.prTool.setTheme(theme);
   }, [theme]);
 
   const currentFile = useMemo(() => {
@@ -144,6 +181,13 @@ export function App() {
       null
     );
   }, [selectedFile, workspace]);
+  const currentFileViewed =
+    workspace?.notes.find((note) => note.file === currentFile?.filename)
+      ?.status === "done";
+  const progress = useMemo(
+    () => (workspace ? reviewProgress(workspace.notes) : null),
+    [workspace],
+  );
 
   const showSymbolSplit =
     symbolState === "loading" ||
@@ -151,6 +195,17 @@ export function App() {
     symbolContexts.length > 0;
   const nextTheme = theme === "dark" ? "light" : "dark";
   const shortcuts = useMemo(() => keyboardShortcuts(), []);
+
+  useEffect(() => {
+    if (!progress) {
+      previousReviewProgressRef.current = null;
+      return;
+    }
+    if (completedAllFiles(previousReviewProgressRef.current, progress)) {
+      setFinishReviewOpen(true);
+    }
+    previousReviewProgressRef.current = progress;
+  }, [progress]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -177,10 +232,6 @@ export function App() {
         event.preventDefault();
         toggleCurrentFileViewed();
         return;
-      }
-      if (event.key.toLowerCase() === "c" && event.shiftKey) {
-        event.preventDefault();
-        setCommentMode((current) => !current);
       }
     };
 
@@ -210,12 +261,15 @@ export function App() {
 
     try {
       const nextWorkspace = await window.prTool.loadPullRequest(nextUrl);
+      previousReviewProgressRef.current = null;
       setWorkspace(nextWorkspace);
       setSelectedFile(nextWorkspace.pullRequest.files[0]?.filename ?? null);
       setSymbolContexts([]);
       setSymbolState("idle");
       setSymbolError(null);
       setUrl(nextWorkspace.pullRequest.summary.url);
+      setFileSources({});
+      setExpandedDiffGaps({});
     } catch (loadError) {
       setError(
         loadError instanceof Error ? loadError.message : String(loadError),
@@ -321,8 +375,159 @@ export function App() {
     setFinishReviewOpen(false);
   }
 
+  async function loadRepositories() {
+    if (!canListRepositories()) {
+      setRepoListState("error");
+      setRepoListError("Restart ReviewBud to enable repository and PR selection. Direct PR URL loading is still available.");
+      return;
+    }
+
+    setRepoListState("loading");
+    setRepoListError(null);
+
+    try {
+      const nextRepositories = await window.prTool.listRepositories();
+      setRepositories(nextRepositories);
+      setRepoListState("idle");
+      if (!selectedRepository && nextRepositories[0]) {
+        void selectRepository(nextRepositories[0]);
+      }
+    } catch (listError) {
+      setRepoListState("error");
+      setRepoListError(listError instanceof Error ? listError.message : String(listError));
+    }
+  }
+
+  async function searchRepositoryList(query: string, owner: string) {
+    if (!canSearchRepositories()) {
+      throw new Error("Restart ReviewBud to enable GitHub-backed repository search.");
+    }
+
+    return window.prTool.searchRepositories(query, owner);
+  }
+
+  async function selectRepository(repository: RepositorySummary) {
+    if (!canListPullRequests()) {
+      setPrListState("error");
+      setRepoListError("Restart ReviewBud to enable repository and PR selection. Direct PR URL loading is still available.");
+      return;
+    }
+
+    setSelectedRepository(repository);
+    setPrListState("loading");
+    setRepoListError(null);
+
+    try {
+      const nextPullRequests = await window.prTool.listPullRequests(repository.owner, repository.repo);
+      setPullRequests(nextPullRequests);
+      setPrListState("idle");
+    } catch (listError) {
+      setPullRequests([]);
+      setPrListState("error");
+      setRepoListError(listError instanceof Error ? listError.message : String(listError));
+    }
+  }
+
+  function returnToPullRequestList() {
+    setWorkspace(null);
+    setSelectedFile(null);
+    setSymbolContexts([]);
+    setSymbolState("idle");
+    setSymbolError(null);
+    setFileSources({});
+    setExpandedDiffGaps({});
+    setCommentSelection(null);
+    setFinishReviewOpen(false);
+  }
+
+  async function toggleCollapsedDiffGap(file: PullRequestFile, row: DiffRow) {
+    if (!workspace) return;
+    const key = collapsedDiffRowKey(row);
+    if (!key) return;
+
+    const filename = file.filename;
+    if (expandedDiffGaps[filename]?.includes(key)) {
+      setExpandedDiffGaps((current) => ({
+        ...current,
+        [filename]: current[filename]?.filter((item) => item !== key) ?? [],
+      }));
+      return;
+    }
+
+    let source = fileSources[filename];
+    if (!source) {
+      const { summary } = workspace.pullRequest;
+      source = await window.prTool.loadFileSource({
+        owner: summary.owner,
+        repo: summary.repo,
+        number: summary.number,
+        file: filename,
+        line: row.collapsedNewStart ?? 1,
+        symbol: "",
+        headRepoFullName: summary.headRepoFullName,
+        headSha: summary.headSha,
+      });
+      setFileSources((current) => ({ ...current, [filename]: source }));
+    }
+
+    setExpandedDiffGaps((current) => ({
+      ...current,
+      [filename]: [...(current[filename] ?? []), key],
+    }));
+  }
+
+  function startSplitResize(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (event.button !== 0) return;
+    const container = reviewColumnsRef.current;
+    if (!container) return;
+
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const containerRect = container.getBoundingClientRect();
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      const rightPaneWidth = containerRect.right - moveEvent.clientX;
+      const nextPercent = (rightPaneWidth / containerRect.width) * 100;
+      setContextPanePercent(
+        clamp(nextPercent, minSplitPanePercent, maxSplitPanePercent),
+      );
+    };
+    const onPointerUp = () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp, { once: true });
+  }
+
+  function resizeSplitWithKeyboard(event: ReactKeyboardEvent<HTMLButtonElement>) {
+    const step = event.shiftKey ? 10 : 4;
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      setContextPanePercent((percent) =>
+        clamp(percent + step, minSplitPanePercent, maxSplitPanePercent),
+      );
+    }
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      setContextPanePercent((percent) =>
+        clamp(percent - step, minSplitPanePercent, maxSplitPanePercent),
+      );
+    }
+    if (event.key === "Home") {
+      event.preventDefault();
+      setContextPanePercent(maxSplitPanePercent);
+    }
+    if (event.key === "End") {
+      event.preventDefault();
+      setContextPanePercent(minSplitPanePercent);
+    }
+  }
+
   return (
     <main className="app-shell">
+      <div className="window-titlebar-drag" aria-hidden="true" />
       <header className={workspace ? "topbar loaded" : "topbar"}>
         {workspace ? (
           <PullRequestHeader workspace={workspace} />
@@ -335,28 +540,14 @@ export function App() {
             </div>
           </div>
         )}
-        <form
-          className="url-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void loadPullRequest();
-          }}
-        >
-          <input
-            aria-label="GitHub pull request URL"
-            placeholder="https://github.com/owner/repo/pull/123"
-            value={url}
-            onChange={(event) => setUrl(event.target.value)}
-          />
-          <button type="submit" disabled={isLoading}>
-            {isLoading ? (
-              <Loader2 className="spin" size={16} aria-hidden="true" />
-            ) : (
-              <RefreshCw size={16} aria-hidden="true" />
-            )}
-            Load
+        {workspace ? (
+          <button type="button" className="back-to-list-button" onClick={returnToPullRequestList}>
+            <ArrowLeft size={16} aria-hidden="true" />
+            Back to PR list
           </button>
-        </form>
+        ) : (
+          <div aria-hidden="true" />
+        )}
         <button
           type="button"
           className="theme-toggle"
@@ -383,8 +574,16 @@ export function App() {
             {workspace && currentFile ? (
               <>
                 <div
+                  ref={reviewColumnsRef}
                   className={
                     showSymbolSplit ? "review-columns split" : "review-columns"
+                  }
+                  style={
+                    showSymbolSplit
+                      ? {
+                          "--context-pane-width": `${contextPanePercent}%`,
+                        } as CSSProperties
+                      : undefined
                   }
                 >
                   <DiffViewer
@@ -392,44 +591,72 @@ export function App() {
                     discussions={workspace.pullRequest.discussions}
                     draftComments={workspace.draftComments ?? []}
                     theme={theme}
-                    commentMode={commentMode}
+                    viewed={currentFileViewed}
                     commentSelection={commentSelection}
+                    source={fileSources[currentFile.filename] ?? null}
+                    expandedGapKeys={expandedDiffGaps[currentFile.filename] ?? []}
                     onOpenSymbol={openSymbolContext}
+                    onToggleCollapsedGap={toggleCollapsedDiffGap}
                     onSelectCommentRange={setCommentSelection}
                   />
                   {showSymbolSplit ? (
-                    <SymbolContextPanel
-                      contexts={symbolContexts}
-                      state={symbolState}
-                      error={symbolError}
-                      theme={theme}
-                      onClose={closeSymbolContext}
-                      onCloseContext={closeSymbolContextAt}
-                      onOpenSymbol={(file, line, column, symbol) =>
-                        openSymbolContext(file, line, column, symbol, true)
-                      }
-                    />
+                    <>
+                      <button
+                        type="button"
+                        className="split-resize-handle"
+                        role="separator"
+                        aria-label="Resize context pane"
+                        aria-orientation="vertical"
+                        aria-valuemin={minSplitPanePercent}
+                        aria-valuemax={maxSplitPanePercent}
+                        aria-valuenow={contextPanePercent}
+                        title="Drag to resize panes"
+                        onPointerDown={startSplitResize}
+                        onKeyDown={resizeSplitWithKeyboard}
+                      />
+                      <SymbolContextPanel
+                        contexts={symbolContexts}
+                        state={symbolState}
+                        error={symbolError}
+                        theme={theme}
+                        onClose={closeSymbolContext}
+                        onCloseContext={closeSymbolContextAt}
+                        onOpenSymbol={(file, line, column, symbol) =>
+                          openSymbolContext(file, line, column, symbol, true)
+                        }
+                      />
+                    </>
                   ) : null}
                 </div>
                 <ReviewActionPane
                   workspace={workspace}
                   currentFile={currentFile}
-                  commentMode={commentMode}
                   commentSelection={commentSelection}
                   shortcuts={shortcuts}
                   onNextFile={() => selectAdjacentFile("next")}
                   onPreviousFile={() => selectAdjacentFile("previous")}
                   onMarkViewed={toggleCurrentFileViewed}
-                  onToggleCommentMode={() =>
-                    setCommentMode((current) => !current)
-                  }
                   onCancelComment={() => setCommentSelection(null)}
                   onSaveComment={saveDraftComment}
                   onFinishReview={() => setFinishReviewOpen(true)}
                 />
               </>
             ) : (
-              <Welcome />
+              <Welcome
+                url={url}
+                repositories={repositories}
+                selectedRepository={selectedRepository}
+                pullRequests={pullRequests}
+                isLoading={isLoading}
+                repoListState={repoListState}
+                prListState={prListState}
+                error={repoListError}
+                onUrlChange={setUrl}
+                onLoadPullRequest={loadPullRequest}
+                onSelectRepository={selectRepository}
+                onReloadRepositories={loadRepositories}
+                onSearchRepositories={searchRepositoryList}
+              />
             )}
           </section>
         </section>
@@ -462,7 +689,6 @@ function keyboardShortcuts() {
     nextFile: `${modifier}+Right`,
     previousFile: `${modifier}+Left`,
     viewed: `${modifier}+Enter`,
-    comment: `${modifier}+Shift+C`,
     finish: `${modifier}+Shift+Enter`,
     approve: `${modifier}+Shift+A`,
     requestChanges: `${modifier}+Shift+R`,
@@ -477,29 +703,66 @@ function isTypingTarget(target: EventTarget | null): boolean {
   return target.matches("input, textarea, select, [contenteditable='true']");
 }
 
+function canListRepositories(): boolean {
+  return typeof window.prTool.listRepositories === "function";
+}
+
+function canListPullRequests(): boolean {
+  return typeof window.prTool.listPullRequests === "function";
+}
+
+function canSearchRepositories(): boolean {
+  return typeof window.prTool.searchRepositories === "function";
+}
+
+function clearMonacoTextFocus() {
+  if (document.activeElement instanceof HTMLElement) {
+    document.activeElement.blur();
+  }
+}
+
+function animateScrollTop(
+  element: HTMLElement,
+  targetScrollTop: number,
+  durationMs: number,
+) {
+  const startScrollTop = element.scrollTop;
+  const distance = targetScrollTop - startScrollTop;
+  if (Math.abs(distance) < 1) return;
+
+  const startedAt = performance.now();
+  const step = (timestamp: number) => {
+    const progress = Math.min(1, (timestamp - startedAt) / durationMs);
+    const easedProgress = 1 - Math.pow(1 - progress, 3);
+    element.scrollTop = startScrollTop + distance * easedProgress;
+
+    if (progress < 1) {
+      window.requestAnimationFrame(step);
+    }
+  };
+
+  window.requestAnimationFrame(step);
+}
+
 function ReviewActionPane({
   workspace,
   currentFile,
-  commentMode,
   commentSelection,
   shortcuts,
   onNextFile,
   onPreviousFile,
   onMarkViewed,
-  onToggleCommentMode,
   onCancelComment,
   onSaveComment,
   onFinishReview,
 }: {
   workspace: ReviewWorkspace;
   currentFile: PullRequestFile;
-  commentMode: boolean;
   commentSelection: LineSelection;
   shortcuts: ReturnType<typeof keyboardShortcuts>;
   onNextFile: () => void;
   onPreviousFile: () => void;
   onMarkViewed: () => void;
-  onToggleCommentMode: () => void;
   onCancelComment: () => void;
   onSaveComment: (
     selection: Exclude<LineSelection, null>,
@@ -535,7 +798,7 @@ function ReviewActionPane({
         "--review-action-pane-height",
       );
     };
-  }, [commentMode, commentSelection, draftComments.length]);
+  }, [commentSelection, draftComments.length]);
 
   return (
     <section
@@ -544,7 +807,6 @@ function ReviewActionPane({
       aria-label="Review actions"
     >
       <div className="review-action-status">
-        <strong>{currentFile.filename}</strong>
         <span>
           {currentNote?.status === "done"
             ? "Viewed"
@@ -573,6 +835,7 @@ function ReviewActionPane({
         <ShortcutButton
           label={currentFileViewed ? "Viewed" : "Mark viewed"}
           shortcut={shortcuts.viewed}
+          intent={currentFileViewed ? "success" : "secondary"}
           pressed={currentFileViewed}
           onClick={onMarkViewed}
         >
@@ -583,14 +846,6 @@ function ReviewActionPane({
           )}
         </ShortcutButton>
         <ShortcutButton
-          label={commentMode ? "Comment on" : "Comment"}
-          shortcut={shortcuts.comment}
-          pressed={commentMode}
-          onClick={onToggleCommentMode}
-        >
-          <MessageSquarePlus size={15} aria-hidden="true" />
-        </ShortcutButton>
-        <ShortcutButton
           label="Finish review"
           shortcut={shortcuts.finish}
           intent="primary"
@@ -599,11 +854,9 @@ function ReviewActionPane({
           <GitPullRequestArrow size={15} aria-hidden="true" />
         </ShortcutButton>
       </div>
-      {commentMode ? (
+      {commentSelection ? (
         <div className="comment-mode-hint" role="status">
-          {commentSelection
-            ? "Add your draft comment below."
-            : "Click or drag changed lines in the diff to draft a comment."}
+          Add your draft comment below.
         </div>
       ) : null}
       {commentSelection ? (
@@ -632,7 +885,7 @@ function ShortcutButton({
   label: string;
   shortcut: string;
   pressed?: boolean;
-  intent?: "primary" | "secondary";
+  intent?: "primary" | "secondary" | "success";
   onClick: () => void;
   children: ReactNode;
 }) {
@@ -963,29 +1216,40 @@ function DiffViewer({
   discussions,
   draftComments,
   theme,
-  commentMode,
+  viewed,
   commentSelection,
+  source,
+  expandedGapKeys,
   onOpenSymbol,
+  onToggleCollapsedGap,
   onSelectCommentRange,
 }: {
   file: PullRequestFile;
   discussions: PullRequestDiscussion[];
   draftComments: DraftReviewComment[];
   theme: ThemeMode;
-  commentMode: boolean;
+  viewed: boolean;
   commentSelection: LineSelection;
+  source: string | null;
+  expandedGapKeys: string[];
   onOpenSymbol: (
     file: string,
     line: number,
     column: number,
     symbol: string,
+    append?: boolean,
   ) => void;
+  onToggleCollapsedGap: (file: PullRequestFile, row: DiffRow) => void;
   onSelectCommentRange: (selection: Exclude<LineSelection, null>) => void;
 }) {
   const rows = useMemo(
     () =>
       buildDiffRows(file.patch || "Diff omitted by GitHub API for this file."),
     [file.patch],
+  );
+  const visibleRows = useMemo(
+    () => source ? expandCollapsedDiffRows(rows, source, new Set(expandedGapKeys)) : rows,
+    [expandedGapKeys, rows, source],
   );
   const fileDiscussions = useMemo(
     () => discussionsForFile(discussions, file.filename),
@@ -1009,7 +1273,14 @@ function DiffViewer({
       <div className="diff-heading">
         <FileCode2 size={18} aria-hidden="true" />
         <div>
-          <h3>{file.filename}</h3>
+          <h3>
+            <span>{file.filename}</span>
+            {viewed ? (
+              <span className="diff-heading-viewed" title="Viewed">
+                <CheckCircle2 size={14} aria-hidden="true" />
+              </span>
+            ) : null}
+          </h3>
           <p>
             {file.status} · {file.changes} changes
           </p>
@@ -1025,15 +1296,15 @@ function DiffViewer({
         ) : null}
         <DiffCodeEditor
           file={file}
-          rows={rows}
+          rows={visibleRows}
           discussions={lineDiscussions}
           draftComments={fileDraftComments}
           theme={theme}
-          commentMode={commentMode}
           commentSelection={
             commentSelection?.file === file.filename ? commentSelection : null
           }
           onOpenSymbol={onOpenSymbol}
+          onToggleCollapsedGap={onToggleCollapsedGap}
           onSelectCommentRange={onSelectCommentRange}
         />
       </div>
@@ -1047,9 +1318,9 @@ function DiffCodeEditor({
   discussions,
   draftComments,
   theme,
-  commentMode,
   commentSelection,
   onOpenSymbol,
+  onToggleCollapsedGap,
   onSelectCommentRange,
 }: {
   file: PullRequestFile;
@@ -1057,25 +1328,26 @@ function DiffCodeEditor({
   discussions: PullRequestDiscussion[];
   draftComments: DraftReviewComment[];
   theme: ThemeMode;
-  commentMode: boolean;
   commentSelection: LineSelection;
   onOpenSymbol: (
     file: string,
     line: number,
     column: number,
     symbol: string,
+    append?: boolean,
   ) => void;
+  onToggleCollapsedGap: (file: PullRequestFile, row: DiffRow) => void;
   onSelectCommentRange: (selection: Exclude<LineSelection, null>) => void;
 }) {
   const editorElementRef = useRef<HTMLDivElement | null>(null);
   const onOpenSymbolRef = useRef(onOpenSymbol);
+  const onToggleCollapsedGapRef = useRef(onToggleCollapsedGap);
   const onSelectCommentRangeRef = useRef(onSelectCommentRange);
-  const commentModeRef = useRef(commentMode);
   const dragStartLineRef = useRef<number | null>(null);
   const editorModel = useMemo(() => buildDiffEditorModel(rows), [rows]);
   const discussionGroups = useMemo(
-    () => discussionsByPosition(discussions, rows.length),
-    [discussions, rows.length],
+    () => discussionsByPosition(discussions, rows),
+    [discussions, rows],
   );
   const discussionZoneHeight = discussionGroups.reduce(
     (total, group) => total + discussionGroupHeight(group.discussions),
@@ -1091,12 +1363,12 @@ function DiffCodeEditor({
   }, [onOpenSymbol]);
 
   useEffect(() => {
-    onSelectCommentRangeRef.current = onSelectCommentRange;
-  }, [onSelectCommentRange]);
+    onToggleCollapsedGapRef.current = onToggleCollapsedGap;
+  }, [onToggleCollapsedGap]);
 
   useEffect(() => {
-    commentModeRef.current = commentMode;
-  }, [commentMode]);
+    onSelectCommentRangeRef.current = onSelectCommentRange;
+  }, [onSelectCommentRange]);
 
   useEffect(() => {
     const editorElement = editorElementRef.current;
@@ -1128,8 +1400,10 @@ function DiffCodeEditor({
         showFoldingControls: "always",
         scrollbar: {
           alwaysConsumeMouseWheel: false,
-          horizontalScrollbarSize: 10,
-          verticalScrollbarSize: 10,
+          horizontal: "hidden",
+          horizontalScrollbarSize: 0,
+          vertical: "hidden",
+          verticalScrollbarSize: 0,
         },
         overviewRulerLanes: 0,
         renderLineHighlight: "none",
@@ -1146,7 +1420,7 @@ function DiffCodeEditor({
           editorModel.rows,
           discussions,
           draftComments,
-          commentMode,
+          true,
           commentSelection,
           null,
         ),
@@ -1170,7 +1444,7 @@ function DiffCodeEditor({
             editorModel.rows,
             discussions,
             draftComments,
-            commentModeRef.current,
+            true,
             commentSelection,
             interactionSelection,
           ),
@@ -1179,10 +1453,15 @@ function DiffCodeEditor({
 
       const clickDisposable = editor.onMouseDown(
         (event: Monaco.editor.IEditorMouseEvent) => {
-          if (!event.event.metaKey && !event.event.ctrlKey) return;
           const position = event.target.position;
           if (!position) return;
           const row = editorModel.rows[position.lineNumber - 1];
+          if (row?.collapsedLines) {
+            event.event.preventDefault();
+            onToggleCollapsedGapRef.current(file, row);
+            return;
+          }
+          if (!event.event.metaKey && !event.event.ctrlKey) return;
           if (!row?.newLine) return;
           const word = model.getWordAtPosition(position);
           if (!word) return;
@@ -1194,13 +1473,58 @@ function DiffCodeEditor({
             row.newLine,
             position.column,
             word.word,
+            true,
           );
         },
       );
+      const editorPointerDown = (event: PointerEvent) => {
+        if (event.button !== 0) return;
+        const target = editor.getTargetAtClientPoint(event.clientX, event.clientY);
+        const position = target?.position;
+        if (!position) return;
+        const row = editorModel.rows[position.lineNumber - 1];
+        if (row?.collapsedLines && !event.metaKey && !event.ctrlKey) {
+          event.preventDefault();
+          event.stopPropagation();
+          event.stopImmediatePropagation();
+          clearMonacoTextFocus();
+          onToggleCollapsedGapRef.current(file, row);
+          return;
+        }
+
+        if (event.metaKey || event.ctrlKey) {
+          const word = model.getWordAtPosition(position);
+          const line = row ? displayDiffLine(row) : "";
+          if (
+            row?.newLine &&
+            word &&
+            isClickableSymbol(line, word.word, word.startColumn - 1)
+          ) {
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+            clearMonacoTextFocus();
+            onOpenSymbolRef.current(
+              file.filename,
+              row.newLine,
+              position.column,
+              word.word,
+              true,
+            );
+            return;
+          }
+        }
+
+        if (row?.newLine) return;
+
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        clearMonacoTextFocus();
+      };
       const mouseUpDisposable = editor.onMouseUp(
         (event: Monaco.editor.IEditorMouseEvent) => {
-          if (!commentModeRef.current || dragStartLineRef.current == null)
-            return;
+          if (dragStartLineRef.current == null) return;
           const endLine =
             newLineFromMouseEvent(event, editorModel.rows) ??
             dragStartLineRef.current;
@@ -1215,10 +1539,6 @@ function DiffCodeEditor({
       );
       const mouseMoveDisposable = editor.onMouseMove(
         (event: Monaco.editor.IEditorMouseEvent) => {
-          if (!commentModeRef.current) {
-            setInteractionSelection(null);
-            return;
-          }
           const hoverLine = newLineFromMouseEvent(event, editorModel.rows);
           if (!hoverLine) {
             if (dragStartLineRef.current == null) setInteractionSelection(null);
@@ -1238,7 +1558,7 @@ function DiffCodeEditor({
         }
       });
       const commentPointerDown = (event: PointerEvent) => {
-        if (!commentModeRef.current || event.button !== 0) return;
+        if (event.button !== 0 || event.metaKey || event.ctrlKey) return;
         const newLine = newLineFromClientPoint(
           editor,
           editorModel.rows,
@@ -1259,7 +1579,6 @@ function DiffCodeEditor({
         });
       };
       const commentPointerMove = (event: PointerEvent) => {
-        if (!commentModeRef.current) return;
         const hoverLine = newLineFromClientPoint(
           editor,
           editorModel.rows,
@@ -1267,9 +1586,11 @@ function DiffCodeEditor({
           event.clientY,
         );
         if (!hoverLine) return;
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation();
+        if (dragStartLineRef.current != null) {
+          event.preventDefault();
+          event.stopPropagation();
+          event.stopImmediatePropagation();
+        }
         const startLine = dragStartLineRef.current ?? hoverLine;
         editor.setSelection(new monaco.Range(1, 1, 1, 1));
         setInteractionSelection({
@@ -1279,7 +1600,7 @@ function DiffCodeEditor({
         });
       };
       const commentPointerUp = (event: PointerEvent) => {
-        if (!commentModeRef.current || dragStartLineRef.current == null) return;
+        if (dragStartLineRef.current == null) return;
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation();
@@ -1302,11 +1623,39 @@ function DiffCodeEditor({
           editorElement.releasePointerCapture?.(event.pointerId);
         }
       };
+      const scrollDiffWithKeyboard = (event: KeyboardEvent) => {
+        if (
+          (event.key !== "ArrowDown" && event.key !== "ArrowUp") ||
+          event.altKey ||
+          event.ctrlKey ||
+          event.metaKey
+        ) {
+          return;
+        }
+
+        const scrollContainer = editorElement.closest(".diff");
+        if (!(scrollContainer instanceof HTMLElement)) return;
+
+        event.preventDefault();
+        event.stopPropagation();
+        const lineHeight = editor.getOption(monaco.editor.EditorOption.lineHeight);
+        scrollContainer.scrollBy({
+          top: event.key === "ArrowDown" ? lineHeight : -lineHeight,
+          behavior: "auto",
+        });
+      };
+      editorElement.addEventListener("pointerdown", editorPointerDown, true);
       editorElement.addEventListener("pointerdown", commentPointerDown, true);
       editorElement.addEventListener("pointermove", commentPointerMove, true);
       editorElement.addEventListener("pointerup", commentPointerUp, true);
+      editorElement.addEventListener("keydown", scrollDiffWithKeyboard, true);
 
       cleanup = () => {
+        editorElement.removeEventListener(
+          "pointerdown",
+          editorPointerDown,
+          true,
+        );
         editorElement.removeEventListener(
           "pointerdown",
           commentPointerDown,
@@ -1318,6 +1667,11 @@ function DiffCodeEditor({
           true,
         );
         editorElement.removeEventListener("pointerup", commentPointerUp, true);
+        editorElement.removeEventListener(
+          "keydown",
+          scrollDiffWithKeyboard,
+          true,
+        );
         clickDisposable.dispose();
         mouseUpDisposable.dispose();
         mouseMoveDisposable.dispose();
@@ -1334,7 +1688,6 @@ function DiffCodeEditor({
       cleanup();
     };
   }, [
-    commentMode,
     commentSelection,
     discussionGroups,
     discussions,
@@ -1347,7 +1700,7 @@ function DiffCodeEditor({
   return (
     <div
       ref={editorElementRef}
-      className={`diff-editor${commentMode ? " diff-editor-comment-mode" : ""}`}
+      className="diff-editor diff-editor-comment-mode"
       style={{ height: `${editorHeight}px` }}
       aria-label={`${file.filename} diff`}
     />
@@ -1377,6 +1730,32 @@ function SymbolContextPanel({
   ) => void;
 }) {
   const latestContext = contexts.at(-1) ?? null;
+  const contextStackRef = useRef<HTMLDivElement | null>(null);
+  const latestContextRef = useRef<HTMLElement | null>(null);
+  const previousContextCountRef = useRef(contexts.length);
+
+  useEffect(() => {
+    if (contexts.length <= previousContextCountRef.current) {
+      previousContextCountRef.current = contexts.length;
+      return;
+    }
+
+    previousContextCountRef.current = contexts.length;
+    const animationFrame = window.requestAnimationFrame(() => {
+      const contextStack = contextStackRef.current;
+      const latestContextElement = latestContextRef.current;
+      if (!contextStack || !latestContextElement) return;
+
+      const stackRect = contextStack.getBoundingClientRect();
+      const contextRect = latestContextElement.getBoundingClientRect();
+      const targetScrollTop =
+        contextStack.scrollTop + contextRect.bottom - stackRect.bottom;
+
+      animateScrollTop(contextStack, Math.max(0, targetScrollTop), 260);
+    });
+
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [contexts.length]);
 
   return (
     <section className="panel symbol-context">
@@ -1410,11 +1789,14 @@ function SymbolContextPanel({
         </p>
       ) : null}
       {contexts.length > 0 ? (
-        <div className="context-stack">
+        <div className="context-stack" ref={contextStackRef}>
           {contexts.map((context, contextIndex) => (
             <article
               className="context-entry"
               key={`${context.file}-${context.startLine}-${context.symbol}-${contextIndex}`}
+              ref={
+                contextIndex === contexts.length - 1 ? latestContextRef : null
+              }
             >
               <div className="context-entry-heading">
                 <div className="context-title">
@@ -1467,7 +1849,15 @@ function ContextCodeEditor({
   const editorCode = context.sourceCode ?? context.code;
   const isFullFileContext = Boolean(context.sourceCode);
   const lineCount = editorCode.split("\n").length;
-  const editorHeight = Math.min(420, Math.max(96, lineCount * 18 + 16));
+  const defaultEditorHeight = Math.min(
+    420,
+    Math.max(minContextEditorHeight, lineCount * 18 + 16),
+  );
+  const [editorHeight, setEditorHeight] = useState(defaultEditorHeight);
+
+  useEffect(() => {
+    setEditorHeight(defaultEditorHeight);
+  }, [defaultEditorHeight]);
 
   useEffect(() => {
     onOpenSymbolRef.current = onOpenSymbol;
@@ -1501,8 +1891,10 @@ function ContextCodeEditor({
         minimap: { enabled: false },
         scrollbar: {
           alwaysConsumeMouseWheel: false,
-          horizontalScrollbarSize: 10,
-          verticalScrollbarSize: 10,
+          horizontal: "hidden",
+          horizontalScrollbarSize: 0,
+          vertical: "hidden",
+          verticalScrollbarSize: 0,
         },
         overviewRulerLanes: 0,
         renderLineHighlight: "none",
@@ -1549,8 +1941,46 @@ function ContextCodeEditor({
           );
         },
       );
+      const editorPointerDown = (event: PointerEvent) => {
+        if (event.button !== 0) return;
+        const target = editor.getTargetAtClientPoint(event.clientX, event.clientY);
+        const position = target?.position;
+        if (!position) return;
+
+        if (event.metaKey || event.ctrlKey) {
+          const word = model.getWordAtPosition(position);
+          const line = model.getLineContent(position.lineNumber);
+          if (word && isClickableSymbol(line, word.word, word.startColumn - 1)) {
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+            clearMonacoTextFocus();
+            const sourceLine = isFullFileContext
+              ? position.lineNumber
+              : context.startLine + position.lineNumber - 1;
+            onOpenSymbolRef.current(
+              context.file,
+              sourceLine,
+              position.column,
+              word.word,
+            );
+            return;
+          }
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        clearMonacoTextFocus();
+      };
+      editorElement.addEventListener("pointerdown", editorPointerDown, true);
 
       cleanup = () => {
+        editorElement.removeEventListener(
+          "pointerdown",
+          editorPointerDown,
+          true,
+        );
         clickDisposable.dispose();
         symbolDecorations.clear();
         editor.dispose();
@@ -1564,14 +1994,77 @@ function ContextCodeEditor({
     };
   }, [context, editorCode, isFullFileContext, theme]);
 
+  function startResize(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const startY = event.clientY;
+    const startHeight = editorHeight;
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      setEditorHeight(
+        clamp(
+          startHeight + moveEvent.clientY - startY,
+          minContextEditorHeight,
+          maxContextEditorHeight,
+        ),
+      );
+    };
+    const onPointerUp = () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp, { once: true });
+  }
+
+  function resizeWithKeyboard(event: ReactKeyboardEvent<HTMLButtonElement>) {
+    const largeStep = event.shiftKey ? 72 : 18;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setEditorHeight((height) =>
+        clamp(height + largeStep, minContextEditorHeight, maxContextEditorHeight),
+      );
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setEditorHeight((height) =>
+        clamp(height - largeStep, minContextEditorHeight, maxContextEditorHeight),
+      );
+    }
+    if (event.key === "Home") {
+      event.preventDefault();
+      setEditorHeight(minContextEditorHeight);
+    }
+    if (event.key === "End") {
+      event.preventDefault();
+      setEditorHeight(maxContextEditorHeight);
+    }
+  }
+
   return (
-    <div
-      ref={editorElementRef}
-      className="context-editor"
-      style={{ height: `${editorHeight}px` }}
-      aria-label={`${context.title} source context`}
-    />
+    <div className="context-editor-frame">
+      <div
+        ref={editorElementRef}
+        className="context-editor"
+        style={{ height: `${editorHeight}px` }}
+        aria-label={`${context.title} source context`}
+      />
+      <button
+        type="button"
+        className="context-resize-handle"
+        aria-label={`Resize ${context.title} source context`}
+        title="Drag to resize snippet"
+        onPointerDown={startResize}
+        onKeyDown={resizeWithKeyboard}
+      />
+    </div>
   );
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 function symbolDecorationsForContext(
@@ -1671,6 +2164,7 @@ function buildDiffEditorModel(rows: DiffRow[]): {
     source: lines.join("\n"),
     lines,
     lineNumbers: rows.map((row) => {
+      if (row.collapsedLines) return "...";
       if (row.newLine) return String(row.newLine);
       if (row.oldLine) return String(row.oldLine);
       return "";
@@ -1763,25 +2257,26 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function diffDecorationsForRows(
+export function diffDecorationsForRows(
   monaco: MonacoApi,
   rows: DiffRow[],
   discussions: PullRequestDiscussion[],
   draftComments: DraftReviewComment[],
-  commentMode: boolean,
+  _commentMode: boolean,
   commentSelection: LineSelection,
   interactionSelection: LineSelection,
 ): Monaco.editor.IModelDeltaDecoration[] {
   return rows.flatMap((row, index) => {
     const lineNumber = index + 1;
-    const diffPosition = index + 1;
+    const diffPosition = row.diffPosition;
     const lineClasses = ["diff-monaco-line"];
     if (row.kind === "added") lineClasses.push("diff-monaco-line-added");
     if (row.kind === "removed") lineClasses.push("diff-monaco-line-removed");
     if (row.kind === "hunk") lineClasses.push("diff-monaco-line-hunk");
+    if (row.collapsedLines) lineClasses.push("diff-monaco-line-collapsed");
     if (
       discussions.some((discussion) =>
-        discussionAffectsDiffPosition(discussion, diffPosition),
+        discussionAffectsDiffRow(discussion, row),
       )
     ) {
       lineClasses.push("diff-monaco-line-comment");
@@ -1797,7 +2292,7 @@ function diffDecorationsForRows(
     ) {
       lineClasses.push("diff-monaco-line-draft-comment");
     }
-    if (row.newLine && commentMode) {
+    if (row.newLine) {
       lineClasses.push("diff-monaco-line-commentable");
     }
     if (
@@ -1817,13 +2312,25 @@ function diffDecorationsForRows(
       lineClasses.push("diff-monaco-line-hover-comment");
     }
 
+    const hasCommentSelectionEdge =
+      lineClasses.includes("diff-monaco-line-selected-comment") ||
+      lineClasses.includes("diff-monaco-line-hover-comment");
+    const marginClasses = lineClasses.filter(
+      (className) =>
+        className !== "diff-monaco-line-selected-comment" &&
+        className !== "diff-monaco-line-hover-comment",
+    );
+    if (hasCommentSelectionEdge) {
+      marginClasses.push("diff-monaco-line-comment-selection-fill");
+      marginClasses.push("diff-monaco-line-comment-selection-edge");
+    }
     const lineDecoration: Monaco.editor.IModelDeltaDecoration = {
       range: new monaco.Range(lineNumber, 1, lineNumber, 1),
       options: {
         isWholeLine: true,
         className: lineClasses.join(" "),
-        lineNumberClassName: lineClasses.join(" "),
-        marginClassName: lineClasses.join(" "),
+        lineNumberClassName: marginClasses.join(" "),
+        marginClassName: marginClasses.join(" "),
       },
     };
 
@@ -1875,13 +2382,36 @@ function newLineFromClientPoint(
 
 function discussionsByPosition(
   discussions: PullRequestDiscussion[],
-  rowCount: number,
+  rows: DiffRow[],
 ): Array<{ position: number; discussions: PullRequestDiscussion[] }> {
   const grouped = new Map<number, PullRequestDiscussion[]>();
+  const editorLineByDiffPosition = new Map<number, number>();
+  const editorLineByRightLine = new Map<number, number>();
+  const editorLineByLeftLine = new Map<number, number>();
+
+  rows.forEach((row, index) => {
+    const editorLine = index + 1;
+    if (row.diffPosition) {
+      editorLineByDiffPosition.set(row.diffPosition, editorLine);
+    }
+    if (row.newLine) {
+      editorLineByRightLine.set(row.newLine, editorLine);
+    }
+    if (row.oldLine) {
+      editorLineByLeftLine.set(row.oldLine, editorLine);
+    }
+  });
 
   for (const discussion of discussions) {
-    if (!discussion.position) continue;
-    const position = Math.max(1, Math.min(rowCount, discussion.position));
+    const position =
+      discussion.line != null
+        ? discussion.side === "LEFT"
+          ? editorLineByLeftLine.get(discussion.line)
+          : editorLineByRightLine.get(discussion.line)
+        : discussion.position != null
+          ? editorLineByDiffPosition.get(discussion.position)
+          : undefined;
+    if (!position) continue;
     grouped.set(position, [...(grouped.get(position) ?? []), discussion]);
   }
 
@@ -1997,15 +2527,217 @@ function MarkdownBody({ body }: { body: string }) {
   );
 }
 
-function Welcome() {
+function Welcome({
+  url,
+  repositories,
+  selectedRepository,
+  pullRequests,
+  isLoading,
+  repoListState,
+  prListState,
+  error,
+  onUrlChange,
+  onLoadPullRequest,
+  onSelectRepository,
+  onReloadRepositories,
+  onSearchRepositories,
+}: {
+  url: string;
+  repositories: RepositorySummary[];
+  selectedRepository: RepositorySummary | null;
+  pullRequests: PullRequestListItem[];
+  isLoading: boolean;
+  repoListState: "idle" | "loading" | "error";
+  prListState: "idle" | "loading" | "error";
+  error: string | null;
+  onUrlChange: (url: string) => void;
+  onLoadPullRequest: (url?: string) => Promise<void>;
+  onSelectRepository: (repository: RepositorySummary) => Promise<void>;
+  onReloadRepositories: () => Promise<void>;
+  onSearchRepositories: (query: string, owner: string) => Promise<RepositorySummary[]>;
+}) {
+  const [repositoryQuery, setRepositoryQuery] = useState("");
+  const [repositoryOwner, setRepositoryOwner] = useState("");
+  const [searchRepositories, setSearchRepositories] = useState<RepositorySummary[]>([]);
+  const [repositorySearchState, setRepositorySearchState] = useState<"idle" | "loading" | "error">("idle");
+  const [repositorySearchError, setRepositorySearchError] = useState<string | null>(null);
+  const owners = useMemo(() => repositoryOwners(repositories), [repositories]);
+  const shouldSearchGitHub = repositoryQuery.trim().length > 0 || repositoryOwner.length > 0;
+  const visibleRepositories = shouldSearchGitHub ? searchRepositories : repositories;
+  const filteredRepositories = useMemo(
+    () =>
+      shouldSearchGitHub
+        ? visibleRepositories
+        : filterRepositories(visibleRepositories, repositoryQuery, repositoryOwner),
+    [repositoryOwner, repositoryQuery, shouldSearchGitHub, visibleRepositories],
+  );
+
+  useEffect(() => {
+    if (!shouldSearchGitHub) {
+      setSearchRepositories([]);
+      setRepositorySearchState("idle");
+      setRepositorySearchError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setRepositorySearchState("loading");
+    setRepositorySearchError(null);
+
+    const timeoutId = window.setTimeout(() => {
+      void onSearchRepositories(repositoryQuery, repositoryOwner)
+        .then((nextRepositories) => {
+          if (cancelled) return;
+          setSearchRepositories(nextRepositories);
+          setRepositorySearchState("idle");
+        })
+        .catch((searchError) => {
+          if (cancelled) return;
+          setSearchRepositories([]);
+          setRepositorySearchState("error");
+          setRepositorySearchError(searchError instanceof Error ? searchError.message : String(searchError));
+        });
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [onSearchRepositories, repositoryOwner, repositoryQuery, shouldSearchGitHub]);
+
   return (
     <section className="welcome">
-      <GitPullRequest size={36} aria-hidden="true" />
-      <h2>Local PR reading, no checkout required.</h2>
-      <p>
-        Load a pull request to inspect metadata, changed files, review
-        discussion, and unified diffs in one focused workspace.
-      </p>
+      <div className="welcome-heading">
+        <GitPullRequest size={32} aria-hidden="true" />
+        <div>
+          <h2>Choose a pull request to review</h2>
+          <p>Select a recent repository, pick a PR, or paste a GitHub pull request URL.</p>
+        </div>
+      </div>
+
+      <div className="landing-layout">
+        <section className="landing-panel repo-panel">
+          <div className="landing-panel-heading">
+            <h3>Repositories</h3>
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="Refresh repositories"
+              title="Refresh repositories"
+              onClick={() => void onReloadRepositories()}
+              disabled={repoListState === "loading"}
+            >
+              <RefreshCw className={repoListState === "loading" ? "spin" : undefined} size={15} aria-hidden="true" />
+            </button>
+          </div>
+          <div className="repo-search">
+            <select
+              aria-label="Filter repositories by organization"
+              value={repositoryOwner}
+              onChange={(event) => setRepositoryOwner(event.target.value)}
+            >
+              <option value="">All orgs</option>
+              {owners.map((owner) => (
+                <option key={owner} value={owner}>
+                  {owner}
+                </option>
+              ))}
+            </select>
+            <input
+              type="search"
+              aria-label="Filter repositories"
+              placeholder="Search repositories"
+              value={repositoryQuery}
+              onChange={(event) => setRepositoryQuery(event.target.value)}
+            />
+          </div>
+          <div className="selection-list" role="list" aria-label="Recent repositories">
+            {filteredRepositories.map((repository) => (
+              <button
+                key={repository.fullName}
+                type="button"
+                className={selectedRepository?.fullName === repository.fullName ? "selection-row selected" : "selection-row"}
+                onClick={() => void onSelectRepository(repository)}
+              >
+                <GitBranch size={15} aria-hidden="true" />
+                <span>
+                  <strong>{repository.fullName}</strong>
+                  <small>{repository.description || "No description"}</small>
+                </span>
+              </button>
+            ))}
+            {(repoListState === "loading" && repositories.length === 0) || repositorySearchState === "loading" ? (
+              <div className="landing-empty">Loading repositories...</div>
+            ) : null}
+            {repositorySearchState === "error" ? (
+              <div className="landing-empty">{repositorySearchError}</div>
+            ) : null}
+            {repoListState === "idle" && repositorySearchState === "idle" && visibleRepositories.length > 0 && filteredRepositories.length === 0 ? (
+              <div className="landing-empty">No repositories match your search.</div>
+            ) : null}
+            {repositorySearchState === "idle" && shouldSearchGitHub && searchRepositories.length === 0 ? (
+              <div className="landing-empty">No repositories found on GitHub.</div>
+            ) : null}
+          </div>
+        </section>
+
+        <section className="landing-panel">
+          <div className="landing-panel-heading">
+            <h3>{selectedRepository ? selectedRepository.fullName : "Pull requests"}</h3>
+          </div>
+          <div className="selection-list" role="list" aria-label="Recent pull requests">
+            {pullRequests.map((pullRequest) => (
+              <button
+                key={pullRequest.id}
+                type="button"
+                className="selection-row pr-row"
+                disabled={isLoading}
+                onClick={() => void onLoadPullRequest(pullRequest.url)}
+              >
+                <GitPullRequestArrow size={15} aria-hidden="true" />
+                <span>
+                  <strong>#{pullRequest.number} {pullRequest.title}</strong>
+                  <small>{pullRequest.state} by {pullRequest.author}</small>
+                </span>
+              </button>
+            ))}
+            {prListState === "loading" ? (
+              <div className="landing-empty">Loading pull requests...</div>
+            ) : null}
+            {prListState === "idle" && selectedRepository && pullRequests.length === 0 ? (
+              <div className="landing-empty">No recent pull requests found.</div>
+            ) : null}
+            {!selectedRepository && repoListState !== "loading" ? (
+              <div className="landing-empty">Select a repository to show recent pull requests.</div>
+            ) : null}
+          </div>
+        </section>
+      </div>
+
+      <form
+        className="url-form landing-url-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void onLoadPullRequest();
+        }}
+      >
+        <input
+          aria-label="GitHub pull request URL"
+          placeholder="https://github.com/owner/repo/pull/123"
+          value={url}
+          onChange={(event) => onUrlChange(event.target.value)}
+        />
+        <button type="submit" disabled={isLoading}>
+          {isLoading ? (
+            <Loader2 className="spin" size={16} aria-hidden="true" />
+          ) : (
+            <RefreshCw size={16} aria-hidden="true" />
+          )}
+          Load from URL
+        </button>
+      </form>
+
+      {error ? <div className="landing-error">{error}</div> : null}
     </section>
   );
 }

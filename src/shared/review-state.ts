@@ -77,6 +77,17 @@ export function reviewProgress(notes: ReviewNote[]): { viewed: number; total: nu
   };
 }
 
+export function completedAllFiles(
+  previous: { viewed: number; total: number } | null,
+  next: { viewed: number; total: number },
+): boolean {
+  return (
+    next.total > 0 &&
+    next.viewed === next.total &&
+    previous?.viewed !== previous?.total
+  );
+}
+
 export function withReviewState(
   workspace: ReviewWorkspace,
   nextState: {

@@ -39,6 +39,10 @@ export interface PullRequestDiscussion {
   body: string;
   path?: string;
   position?: number;
+  line?: number;
+  side?: "LEFT" | "RIGHT";
+  startLine?: number;
+  startSide?: "LEFT" | "RIGHT";
   isResolved?: boolean;
   isOutdated?: boolean;
   createdAt: string;
@@ -87,8 +91,30 @@ export interface ReviewWorkspace {
 export interface DiffRow {
   text: string;
   kind: "hunk" | "added" | "removed" | "context";
+  diffPosition?: number;
   oldLine?: number;
   newLine?: number;
+  collapsedLines?: number;
+  collapsedOldStart?: number;
+  collapsedNewStart?: number;
+  collapsedExpanded?: boolean;
+}
+
+export interface RepositorySummary {
+  fullName: string;
+  owner: string;
+  repo: string;
+  description: string;
+  updatedAt: string;
+}
+
+export interface PullRequestListItem extends PullRequestRef {
+  id: string;
+  url: string;
+  title: string;
+  state: string;
+  author: string;
+  updatedAt: string;
 }
 
 export interface SymbolContextRequest {

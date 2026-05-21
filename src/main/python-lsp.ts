@@ -50,7 +50,7 @@ export async function resolvePythonSymbolContextWithLsp(
 
     return {
       ...extractSymbolContext(definitionSource, {
-        file: path.relative(snapshotPath, definitionFile),
+        file: relativeSourcePath(snapshotPath, definitionFile),
         line: definitionLine,
         symbol: request.symbol,
       }),
@@ -60,6 +60,10 @@ export async function resolvePythonSymbolContextWithLsp(
   } finally {
     await client.stop();
   }
+}
+
+function relativeSourcePath(root: string, file: string): string {
+  return path.relative(root, file).split(path.sep).join("/");
 }
 
 class PyrightLanguageServer {
@@ -74,9 +78,19 @@ class PyrightLanguageServer {
   constructor(private readonly projectRoot: string) {}
 
   async start(): Promise<void> {
-    const command = path.join(process.cwd(), "node_modules", ".bin", "pyright-langserver");
-    this.process = spawn(command, ["--stdio"], {
+    const command = process.execPath;
+    const langserver = path.join(
+      process.cwd(),
+      "node_modules",
+      "pyright",
+      "langserver.index.js",
+    );
+    this.process = spawn(command, [langserver, "--stdio"], {
       cwd: this.projectRoot,
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: "1",
+      },
       stdio: ["pipe", "pipe", "pipe"],
     });
 
