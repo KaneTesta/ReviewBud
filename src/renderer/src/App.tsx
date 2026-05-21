@@ -5,24 +5,19 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   CheckCircle2,
-  Circle,
   ExternalLink,
   FileCode2,
   GitPullRequest,
-  HelpCircle,
   Loader2,
   Moon,
   MessageSquareText,
   RefreshCw,
-  Search,
   Sun,
   X,
 } from "lucide-react";
 import type {
   PullRequestDiscussion,
   PullRequestFile,
-  RecentPullRequest,
-  ReviewNote,
   ReviewWorkspace,
   SymbolContext,
   DiffRow,
@@ -95,18 +90,13 @@ export function App() {
   const [theme, setTheme] = useState<ThemeMode>(() => initialTheme());
   const [url, setUrl] = useState(defaultUrl);
   const [workspace, setWorkspace] = useState<ReviewWorkspace | null>(null);
-  const [recent, setRecent] = useState<RecentPullRequest[]>([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [filter, setFilter] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [symbolContexts, setSymbolContexts] = useState<SymbolContext[]>([]);
   const [symbolState, setSymbolState] = useState<"idle" | "loading" | "error">("idle");
   const [symbolError, setSymbolError] = useState<string | null>(null);
 
-  useEffect(() => {
-    void refreshRecent();
-  }, []);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -119,12 +109,6 @@ export function App() {
     return workspace.pullRequest.files.find((file) => file.filename === selectedFile) ?? workspace.pullRequest.files[0] ?? null;
   }, [selectedFile, workspace]);
 
-  const filteredFiles = useMemo(() => {
-    if (!workspace) return [];
-    const needle = filter.trim().toLowerCase();
-    if (!needle) return workspace.pullRequest.files;
-    return workspace.pullRequest.files.filter((file) => file.filename.toLowerCase().includes(needle));
-  }, [filter, workspace]);
 
   const showSymbolSplit = symbolState === "loading" || symbolState === "error" || symbolContexts.length > 0;
   const nextTheme = theme === "dark" ? "light" : "dark";
@@ -143,9 +127,6 @@ export function App() {
     }
   }
 
-  async function refreshRecent() {
-    setRecent(await window.prTool.listRecent());
-  }
 
   async function loadPullRequest(nextUrl = url) {
     setIsLoading(true);
@@ -159,7 +140,6 @@ export function App() {
       setSymbolState("idle");
       setSymbolError(null);
       setUrl(nextWorkspace.pullRequest.summary.url);
-      await refreshRecent();
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {
@@ -167,24 +147,6 @@ export function App() {
     }
   }
 
-  async function openCached(id: string) {
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const nextWorkspace = await window.prTool.openCached(id);
-      setWorkspace(nextWorkspace);
-      setSelectedFile(nextWorkspace.pullRequest.files[0]?.filename ?? null);
-      setSymbolContexts([]);
-      setSymbolState("idle");
-      setSymbolError(null);
-      setUrl(nextWorkspace.pullRequest.summary.url);
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : String(loadError));
-    } finally {
-      setIsLoading(false);
-    }
-  }
 
   async function openSymbolContext(file: string, line: number, column: number, symbol: string, append = false) {
     if (!workspace) return;
@@ -264,23 +226,6 @@ export function App() {
       {error ? <div className="error-banner">{error}</div> : null}
 
       <section className="workspace">
-        <aside className="sidebar">
-          <RecentList recent={recent} onOpen={openCached} activeId={workspace?.pullRequest.summary.id ?? null} />
-          {workspace ? (
-            <FileNavigator
-              files={filteredFiles}
-              allFiles={workspace.pullRequest.files}
-              notes={workspace.notes}
-              filter={filter}
-              selectedFile={currentFile?.filename ?? null}
-              onFilter={setFilter}
-              onSelect={setSelectedFile}
-            />
-          ) : (
-            <EmptyPanel />
-          )}
-        </aside>
-
         <section className="review-surface">
           {workspace && currentFile ? (
             <>
@@ -312,91 +257,6 @@ function initialTheme(): ThemeMode {
   const savedTheme = window.localStorage.getItem(themeStorageKey);
   if (savedTheme === "dark" || savedTheme === "light") return savedTheme;
   return "light";
-}
-
-function RecentList({
-  recent,
-  activeId,
-  onOpen,
-}: {
-  recent: RecentPullRequest[];
-  activeId: string | null;
-  onOpen: (id: string) => void;
-}) {
-  return (
-    <section className="panel recent">
-      <div className="panel-heading">
-        <h2>Recent</h2>
-      </div>
-      {recent.length === 0 ? (
-        <p className="muted">No cached pull requests yet.</p>
-      ) : (
-        <div className="recent-list">
-          {recent.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={item.id === activeId ? "recent-item active" : "recent-item"}
-              onClick={() => onOpen(item.id)}
-            >
-              <span>{item.owner}/{item.repo}#{item.number}</span>
-              <strong>{item.title}</strong>
-            </button>
-          ))}
-        </div>
-      )}
-    </section>
-  );
-}
-
-function FileNavigator({
-  files,
-  allFiles,
-  notes,
-  filter,
-  selectedFile,
-  onFilter,
-  onSelect,
-}: {
-  files: PullRequestFile[];
-  allFiles: PullRequestFile[];
-  notes: ReviewNote[];
-  filter: string;
-  selectedFile: string | null;
-  onFilter: (value: string) => void;
-  onSelect: (file: string) => void;
-}) {
-  const doneCount = notes.filter((note) => note.status === "done").length;
-
-  return (
-    <section className="panel file-panel">
-      <div className="panel-heading split">
-        <h2>Files</h2>
-        <span>{doneCount}/{allFiles.length}</span>
-      </div>
-      <label className="search-box">
-        <Search size={15} aria-hidden="true" />
-        <input aria-label="Filter changed files" value={filter} onChange={(event) => onFilter(event.target.value)} placeholder="Filter files" />
-      </label>
-      <div className="file-list">
-        {files.map((file) => {
-          const note = notes.find((item) => item.file === file.filename);
-          return (
-            <button
-              key={file.filename}
-              type="button"
-              className={file.filename === selectedFile ? "file-row active" : "file-row"}
-              onClick={() => onSelect(file.filename)}
-            >
-              {note?.status === "done" ? <CheckCircle2 size={15} aria-hidden="true" /> : <Circle size={15} aria-hidden="true" />}
-              <span className="file-name">{file.filename}</span>
-              <span className="change-count">+{file.additions} -{file.deletions}</span>
-            </button>
-          );
-        })}
-      </div>
-    </section>
-  );
 }
 
 function PullRequestHeader({ workspace }: { workspace: ReviewWorkspace }) {
@@ -1053,15 +913,6 @@ function MarkdownBody({ body }: { body: string }) {
         {body}
       </ReactMarkdown>
     </div>
-  );
-}
-
-function EmptyPanel() {
-  return (
-    <section className="panel empty-panel">
-      <HelpCircle size={20} aria-hidden="true" />
-      <p>Paste a GitHub PR URL to begin. The app fetches data through `gh` and caches it locally.</p>
-    </section>
   );
 }
 

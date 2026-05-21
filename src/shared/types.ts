@@ -65,15 +65,6 @@ export interface ReviewWorkspace {
   notes: ReviewNote[];
 }
 
-export interface RecentPullRequest {
-  id: string;
-  title: string;
-  url: string;
-  owner: string;
-  repo: string;
-  number: number;
-  loadedAt: string;
-}
 
 export interface DiffRow {
   text: string;

@@ -1,6 +1,6 @@
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { CachedPullRequest, RecentPullRequest, ReviewNote, ReviewWorkspace } from "../shared/types.js";
+import type { CachedPullRequest, ReviewNote, ReviewWorkspace } from "../shared/types.js";
 
 export class ReviewStorage {
   private readonly cacheDir: string;
@@ -25,30 +25,6 @@ export class ReviewStorage {
     return JSON.parse(raw) as ReviewWorkspace;
   }
 
-  async listRecent(): Promise<RecentPullRequest[]> {
-    await this.ensureCacheDir();
-    const entries = await readdir(this.cacheDir);
-    const workspaces = await Promise.all(
-      entries
-        .filter((entry) => entry.endsWith(".json"))
-        .map(async (entry) => {
-          const raw = await readFile(path.join(this.cacheDir, entry), "utf8");
-          return JSON.parse(raw) as ReviewWorkspace;
-        }),
-    );
-
-    return workspaces
-      .map(({ pullRequest }) => ({
-        id: pullRequest.summary.id,
-        title: pullRequest.summary.title,
-        url: pullRequest.summary.url,
-        owner: pullRequest.summary.owner,
-        repo: pullRequest.summary.repo,
-        number: pullRequest.summary.number,
-        loadedAt: pullRequest.loadedAt,
-      }))
-      .sort((left, right) => right.loadedAt.localeCompare(left.loadedAt));
-  }
 
   private async loadNotes(id: string): Promise<ReviewNote[]> {
     try {

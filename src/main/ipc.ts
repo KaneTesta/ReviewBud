@@ -13,9 +13,6 @@ export function registerIpcHandlers(): void {
     return storage.savePullRequest(pullRequest);
   });
 
-  ipcMain.handle("pr:listRecent", async () => storage.listRecent());
-
-  ipcMain.handle("pr:openCached", async (_event, id: string) => storage.loadWorkspace(id));
 
   ipcMain.handle("pr:symbolContext", async (_event, request: SymbolContextRequest) =>
     fetchSymbolContext(request, app.getPath("userData")),
