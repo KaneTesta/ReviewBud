@@ -37,7 +37,11 @@ import {
   discussionsForFile,
   shouldCollapseDiscussion,
 } from "../../shared/discussions";
-import { buildDiffRows, displayDiffLine, tokenizeCodeLine } from "../../shared/symbol-context";
+import {
+  buildDiffRows,
+  displayDiffLine,
+  tokenizeCodeLine,
+} from "../../shared/symbol-context";
 import {
   adjacentFile,
   createDraftReview,
@@ -527,12 +531,18 @@ function ReviewActionPane({
     return () => {
       resizeObserver.disconnect();
       window.removeEventListener("resize", updatePaneHeight);
-      document.documentElement.style.removeProperty("--review-action-pane-height");
+      document.documentElement.style.removeProperty(
+        "--review-action-pane-height",
+      );
     };
   }, [commentMode, commentSelection, draftComments.length]);
 
   return (
-    <section ref={paneRef} className="review-action-pane" aria-label="Review actions">
+    <section
+      ref={paneRef}
+      className="review-action-pane"
+      aria-label="Review actions"
+    >
       <div className="review-action-status">
         <strong>{currentFile.filename}</strong>
         <span>
@@ -1432,10 +1442,7 @@ function SymbolContextPanel({
           ))}
         </div>
       ) : state !== "error" ? (
-        <p className="muted">
-          Cmd-click an identifier in the diff to inspect its implementation
-          here.
-        </p>
+        <p className="muted">Finding symbol</p>
       ) : null}
     </section>
   );
