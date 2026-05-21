@@ -4,6 +4,16 @@ ReviewBud is a local Electron app for reading GitHub pull requests without using
 
 Paste a pull request URL, fetch the PR through the GitHub CLI, review metadata and diffs in a focused desktop UI, add local notes, and Cmd-click symbols in TypeScript or JavaScript diffs to inspect surrounding implementation context.
 
+## Features
+
+- Load GitHub pull requests by URL or by selecting from recent/searchable repositories.
+- Review PR metadata, changed files, unified diffs, existing reviews, and inline discussions in a local desktop workspace.
+- Mark files as viewed, navigate changed files with keyboard shortcuts, and track review progress.
+- Draft line comments and a final review outcome locally without writing to the target repository.
+- Expand collapsed diff gaps and inspect source context without checking out PR branches in your active workspace.
+- Cmd/Ctrl-click symbols in TypeScript, JavaScript, and Python diffs to open implementation context, with raw file context as a fallback.
+- Persist cached PR data, notes, draft comments, draft review state, and theme preference under Electron `userData`.
+
 ## Requirements
 
 - Node.js 20 or newer
