@@ -883,15 +883,20 @@ kbd {
   padding: 6px 9px;
   background: var(--surface-1);
   color: var(--ink-muted);
+  cursor: pointer;
   font-size: 12px;
   font-weight: 500;
   line-height: 1.2;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
 }
 
 .discussion-reply-toggle:hover {
-  border-color: var(--hairline-strong);
+  border-color: var(--accent);
   background: var(--surface-3);
-  color: var(--ink);
+  color: var(--accent);
 }
 
 .discussion-reply-composer {
