@@ -5,7 +5,6 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   CheckCircle2,
-  ExternalLink,
   FileCode2,
   GitPullRequest,
   Loader2,
@@ -265,7 +264,11 @@ function PullRequestHeader({ workspace }: { workspace: ReviewWorkspace }) {
     <section className="pr-header">
       <div>
         <div className="eyebrow">{summary.owner}/{summary.repo}#{summary.number}</div>
-        <h2>{summary.title}</h2>
+        <h2>
+          <a href={summary.url} target="_blank" rel="noreferrer">
+            {summary.title}
+          </a>
+        </h2>
         <p>
           {summary.author} wants to merge <strong>{summary.headRef}</strong> into <strong>{summary.baseRef}</strong>
         </p>
@@ -275,9 +278,6 @@ function PullRequestHeader({ workspace }: { workspace: ReviewWorkspace }) {
         <span className="plus">+{summary.additions}</span>
         <span className="minus">-{summary.deletions}</span>
         {summary.reviewDecision ? <span>{summary.reviewDecision}</span> : null}
-        <a href={summary.url} target="_blank" rel="noreferrer" aria-label="Open pull request on GitHub">
-          <ExternalLink size={16} aria-hidden="true" />
-        </a>
       </div>
     </section>
   );
