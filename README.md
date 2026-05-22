@@ -46,6 +46,17 @@ https://github.com/owner/repo/pull/123
 | `npm run build`     | Build the Electron main/preload files and Vite renderer      |
 | `npm run typecheck` | Typecheck the project                                        |
 | `npm test`          | Run unit tests with Node's test runner                       |
+| `npm run install:macos-service` | Install the macOS Services menu item for reviewing selected PR links |
+
+## macOS Services Menu
+
+Run this once to add **Review PR** to the macOS Services submenu for selected GitHub PR links in apps like Slack and Safari:
+
+```bash
+npm run install:macos-service
+```
+
+Start ReviewBud once after installing so macOS registers the `reviewbud://` deep link handler. Then right-click a GitHub PR link and choose **Services → Review PR**.
 
 ## Project Structure
 

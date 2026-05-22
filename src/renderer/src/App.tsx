@@ -183,6 +183,22 @@ export function App() {
     void window.prTool.setTheme(theme);
   }, [theme]);
 
+  useEffect(() => {
+    const reviewPullRequestLink = (nextUrl: string) => {
+      setUrl(nextUrl);
+      void loadPullRequest(nextUrl);
+    };
+    const unsubscribe = window.prTool.onReviewPullRequestLink((nextUrl) => {
+      reviewPullRequestLink(nextUrl);
+    });
+    void window.prTool.markReadyForReviewPullRequestLinks().then((pendingUrls) => {
+      for (const nextUrl of pendingUrls) {
+        reviewPullRequestLink(nextUrl);
+      }
+    });
+    return unsubscribe;
+  }, []);
+
   const currentFile = useMemo(() => {
     if (!workspace) return null;
     return (
