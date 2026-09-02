@@ -1219,6 +1219,10 @@ function LineCommentComposer({
   return (
     <form
       className="line-comment-composer"
+      onPointerDown={stopDiffViewZoneEventPropagation}
+      onMouseDown={stopDiffViewZoneEventPropagation}
+      onClick={stopDiffViewZoneEventPropagation}
+      onContextMenu={stopDiffViewZoneEventPropagation}
       onSubmit={(event) => {
         event.preventDefault();
         save();
@@ -1839,6 +1843,7 @@ function DiffCodeEditor({
   const updateInteractionSelectionRef = useRef<(selection: LineSelection) => void>(
     () => {},
   );
+  const snippetActionMenuSelectionRef = useRef<LineSelection>(null);
   const dragStartLineRef = useRef<number | null>(null);
   const [snippetActionMenu, setSnippetActionMenu] = useState<{
     selection: Exclude<LineSelection, null>;
@@ -1897,7 +1902,9 @@ function DiffCodeEditor({
   }, [commentSelection]);
 
   useLayoutEffect(() => {
-    updateInteractionSelectionRef.current(snippetActionMenu?.selection ?? null);
+    const selection = snippetActionMenu?.selection ?? null;
+    snippetActionMenuSelectionRef.current = selection;
+    updateInteractionSelectionRef.current(selection);
   }, [snippetActionMenu]);
 
   useEffect(() => {
@@ -2085,7 +2092,25 @@ function DiffCodeEditor({
           clientX - editorRect.left,
           clientY - editorRect.top,
         );
+        snippetActionMenuSelectionRef.current = selection;
+        setInteractionSelection(selection);
         setSnippetActionMenu({ selection, ...position });
+      };
+      const isDiffViewZonePointerEvent = (
+        event: Pick<MouseEvent, "clientX" | "clientY" | "target">,
+      ) => {
+        if (isDiffViewZoneInteractionTarget(event.target)) return true;
+        return Array.from(
+          editorElement.querySelectorAll<HTMLElement>(
+            ".diff-inline-composer-zone, .diff-discussion-zone",
+          ),
+        ).some((zone) =>
+          isPointInsideRect(
+            event.clientX,
+            event.clientY,
+            zone.getBoundingClientRect(),
+          ),
+        );
       };
 
       const clickDisposable = editor.onMouseDown(
@@ -2116,6 +2141,10 @@ function DiffCodeEditor({
       );
       const editorPointerDown = (event: PointerEvent) => {
         if (event.button !== 0) return;
+        if (isDiffViewZonePointerEvent(event)) {
+          dragStartLineRef.current = null;
+          return;
+        }
         const target = editor.getTargetAtClientPoint(event.clientX, event.clientY);
         const position = target?.position;
         if (!position) return;
@@ -2175,9 +2204,20 @@ function DiffCodeEditor({
       );
       const mouseMoveDisposable = editor.onMouseMove(
         (event: Monaco.editor.IEditorMouseEvent) => {
+          if (
+            snippetActionMenuSelectionRef.current &&
+            dragStartLineRef.current == null
+          ) {
+            setInteractionSelection(snippetActionMenuSelectionRef.current);
+            return;
+          }
           const hoverLine = newLineFromMouseEvent(event, editorModel.rows);
           if (!hoverLine) {
-            if (dragStartLineRef.current == null) setInteractionSelection(null);
+            const selection = interactionSelectionAfterPointerExit(
+              snippetActionMenuSelectionRef.current,
+              dragStartLineRef.current,
+            );
+            if (selection !== undefined) setInteractionSelection(selection);
             return;
           }
           const startLine = dragStartLineRef.current ?? hoverLine;
@@ -2189,12 +2229,18 @@ function DiffCodeEditor({
         },
       );
       const mouseLeaveDisposable = editor.onMouseLeave(() => {
-        if (dragStartLineRef.current == null) {
-          setInteractionSelection(null);
-        }
+        const selection = interactionSelectionAfterPointerExit(
+          snippetActionMenuSelectionRef.current,
+          dragStartLineRef.current,
+        );
+        if (selection !== undefined) setInteractionSelection(selection);
       });
       const commentPointerDown = (event: PointerEvent) => {
         if (event.button !== 0 || event.metaKey || event.ctrlKey) return;
+        if (isDiffViewZonePointerEvent(event)) {
+          dragStartLineRef.current = null;
+          return;
+        }
         const newLine = newLineFromClientPoint(
           editor,
           editorModel.rows,
@@ -2236,6 +2282,10 @@ function DiffCodeEditor({
         });
       };
       const commentPointerUp = (event: PointerEvent) => {
+        if (isDiffViewZonePointerEvent(event)) {
+          dragStartLineRef.current = null;
+          return;
+        }
         if (dragStartLineRef.current == null) return;
         event.preventDefault();
         event.stopPropagation();
@@ -2259,6 +2309,7 @@ function DiffCodeEditor({
         }
       };
       const openSnippetMenuFromContextClick = (event: MouseEvent) => {
+        if (isDiffViewZonePointerEvent(event)) return;
         const newLine = newLineFromClientPoint(
           editor,
           editorModel.rows,
@@ -2834,6 +2885,43 @@ export function snippetActionForKey(event: {
   if (event.key.toLowerCase() === "c") return "comment";
   if (event.key.toLowerCase() === "e") return "explain";
   return null;
+}
+
+export function isDiffViewZoneInteractionTarget(
+  target: EventTarget | { closest: (selector: string) => unknown } | null,
+): boolean {
+  if (!target || typeof target !== "object" || !("closest" in target)) {
+    return false;
+  }
+  const closest = target.closest;
+  if (typeof closest !== "function") return false;
+  return Boolean(
+    closest.call(
+      target,
+      ".diff-inline-composer-zone, .diff-discussion-zone",
+    ),
+  );
+}
+
+export function stopDiffViewZoneEventPropagation(event: {
+  stopPropagation: () => void;
+}): void {
+  event.stopPropagation();
+}
+
+export function isPointInsideRect(
+  x: number,
+  y: number,
+  rect: Pick<DOMRect, "bottom" | "left" | "right" | "top">,
+): boolean {
+  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+}
+
+export function interactionSelectionAfterPointerExit(
+  activeMenuSelection: LineSelection,
+  dragStartLine: number | null,
+): LineSelection | undefined {
+  return dragStartLine == null ? activeMenuSelection : undefined;
 }
 
 export function editorLineForSelectedRange(

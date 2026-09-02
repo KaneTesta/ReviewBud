@@ -5,11 +5,15 @@ import {
   commentGroupsByPosition,
   createDiffDecorationUpdater,
   diffDecorationsForRows,
+  interactionSelectionAfterPointerExit,
+  isDiffViewZoneInteractionTarget,
+  isPointInsideRect,
   isPrDescriptionShortcut,
   editorLineForSelectedRange,
   scrollDiffPaneWithArrowKey,
   snippetActionForKey,
   snippetActionMenuPosition,
+  stopDiffViewZoneEventPropagation,
 } from "../src/renderer/src/App";
 import type { DiffRow, DraftReviewComment, PullRequestDiscussion } from "../src/shared/types";
 
@@ -60,6 +64,57 @@ describe("comment interactions", () => {
     assert.equal(snippetActionForKey({ key: "e", ctrlKey: true }), null);
     assert.equal(snippetActionForKey({ key: "e", altKey: true }), null);
     assert.equal(snippetActionForKey({ key: "x" }), null);
+  });
+
+  it("keeps diff selection handlers out of inline composer controls", () => {
+    const inlineComposerTarget = {
+      closest: (selector: string) =>
+        selector.includes(".diff-inline-composer-zone") ? {} : null,
+    };
+    const discussionTarget = {
+      closest: (selector: string) =>
+        selector.includes(".diff-discussion-zone") ? {} : null,
+    };
+    const diffLineTarget = { closest: () => null };
+
+    assert.equal(isDiffViewZoneInteractionTarget(inlineComposerTarget), true);
+    assert.equal(isDiffViewZoneInteractionTarget(discussionTarget), true);
+    assert.equal(isDiffViewZoneInteractionTarget(diffLineTarget), false);
+    assert.equal(isDiffViewZoneInteractionTarget(null), false);
+  });
+
+  it("stops composer pointer events from bubbling back into Monaco", () => {
+    let propagationStopped = false;
+
+    stopDiffViewZoneEventPropagation({
+      stopPropagation: () => {
+        propagationStopped = true;
+      },
+    });
+
+    assert.equal(propagationStopped, true);
+  });
+
+  it("recognizes pointer coordinates inside an overlaid composer zone", () => {
+    const composerRect = { left: 100, right: 500, top: 200, bottom: 380 };
+
+    assert.equal(isPointInsideRect(300, 250, composerRect), true);
+    assert.equal(isPointInsideRect(99, 250, composerRect), false);
+    assert.equal(isPointInsideRect(300, 381, composerRect), false);
+  });
+
+  it("retains the selected lines while the snippet action menu has focus", () => {
+    const menuSelection = { file: "src/example.ts", startLine: 12, endLine: 14 };
+
+    assert.deepEqual(
+      interactionSelectionAfterPointerExit(menuSelection, null),
+      menuSelection,
+    );
+    assert.equal(interactionSelectionAfterPointerExit(null, null), null);
+    assert.equal(
+      interactionSelectionAfterPointerExit(menuSelection, 12),
+      undefined,
+    );
   });
 
   it("updates the selected comment lines without recreating the editor", () => {

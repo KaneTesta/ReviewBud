@@ -768,6 +768,7 @@ a:focus-visible {
 }
 
 .diff-inline-composer-zone {
+  z-index: 1;
   box-sizing: border-box;
   padding: 8px 12px 10px;
 }
