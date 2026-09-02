@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import type * as Monaco from "monaco-editor";
 import { createRoot, type Root } from "react-dom/client";
@@ -159,7 +159,7 @@ export function App() {
   const [finishReviewOpen, setFinishReviewOpen] = useState(false);
   const [fileSources, setFileSources] = useState<Record<string, string>>({});
   const [expandedDiffGaps, setExpandedDiffGaps] = useState<Record<string, string[]>>({});
-  const [contextPanePercent, setContextPanePercent] = useState(50);
+  const contextPanePercentRef = useRef(50);
   const reviewColumnsRef = useRef<HTMLDivElement | null>(null);
   const previousReviewProgressRef = useRef<ReturnType<typeof reviewProgress> | null>(
     null,
@@ -574,14 +574,17 @@ export function App() {
     if (!container) return;
 
     event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
+    const resizeHandle = event.currentTarget;
+    resizeHandle.setPointerCapture(event.pointerId);
     const containerRect = container.getBoundingClientRect();
 
     const onPointerMove = (moveEvent: PointerEvent) => {
       const rightPaneWidth = containerRect.right - moveEvent.clientX;
       const nextPercent = (rightPaneWidth / containerRect.width) * 100;
-      setContextPanePercent(
-        clamp(nextPercent, minSplitPanePercent, maxSplitPanePercent),
+      contextPanePercentRef.current = applySplitPanePercent(
+        container,
+        resizeHandle,
+        nextPercent,
       );
     };
     const onPointerUp = () => {
@@ -595,25 +598,29 @@ export function App() {
 
   function resizeSplitWithKeyboard(event: ReactKeyboardEvent<HTMLButtonElement>) {
     const step = event.shiftKey ? 10 : 4;
+    let nextPercent: number | null = null;
     if (event.key === "ArrowLeft") {
       event.preventDefault();
-      setContextPanePercent((percent) =>
-        clamp(percent + step, minSplitPanePercent, maxSplitPanePercent),
-      );
+      nextPercent = contextPanePercentRef.current + step;
     }
     if (event.key === "ArrowRight") {
       event.preventDefault();
-      setContextPanePercent((percent) =>
-        clamp(percent - step, minSplitPanePercent, maxSplitPanePercent),
-      );
+      nextPercent = contextPanePercentRef.current - step;
     }
     if (event.key === "Home") {
       event.preventDefault();
-      setContextPanePercent(maxSplitPanePercent);
+      nextPercent = maxSplitPanePercent;
     }
     if (event.key === "End") {
       event.preventDefault();
-      setContextPanePercent(minSplitPanePercent);
+      nextPercent = minSplitPanePercent;
+    }
+    if (nextPercent != null && reviewColumnsRef.current) {
+      contextPanePercentRef.current = applySplitPanePercent(
+        reviewColumnsRef.current,
+        event.currentTarget,
+        nextPercent,
+      );
     }
   }
 
@@ -673,7 +680,7 @@ export function App() {
                   style={
                     showSymbolSplit
                       ? {
-                          "--context-pane-width": `${contextPanePercent}%`,
+                          "--context-pane-width": `${contextPanePercentRef.current}%`,
                         } as CSSProperties
                       : undefined
                   }
@@ -703,7 +710,7 @@ export function App() {
                         aria-orientation="vertical"
                         aria-valuemin={minSplitPanePercent}
                         aria-valuemax={maxSplitPanePercent}
-                        aria-valuenow={contextPanePercent}
+                        aria-valuenow={contextPanePercentRef.current}
                         title="Drag to resize panes"
                         onPointerDown={startSplitResize}
                         onKeyDown={resizeSplitWithKeyboard}
@@ -1500,7 +1507,13 @@ function DiffCodeEditor({
   const onOpenSymbolRef = useRef(onOpenSymbol);
   const onToggleCollapsedGapRef = useRef(onToggleCollapsedGap);
   const onSelectCommentRangeRef = useRef(onSelectCommentRange);
+  const onReplyToDiscussionRef = useRef(onReplyToDiscussion);
+  const commentSelectionRef = useRef(commentSelection);
+  const updateCommentSelectionRef = useRef<(selection: LineSelection) => void>(
+    () => {},
+  );
   const dragStartLineRef = useRef<number | null>(null);
+  commentSelectionRef.current = commentSelection;
   const editorModel = useMemo(() => buildDiffEditorModel(rows), [rows]);
   const discussionGroups = useMemo(
     () => discussionsByPosition(discussions, rows),
@@ -1526,6 +1539,14 @@ function DiffCodeEditor({
   useEffect(() => {
     onSelectCommentRangeRef.current = onSelectCommentRange;
   }, [onSelectCommentRange]);
+
+  useEffect(() => {
+    onReplyToDiscussionRef.current = onReplyToDiscussion;
+  }, [onReplyToDiscussion]);
+
+  useLayoutEffect(() => {
+    updateCommentSelectionRef.current(commentSelection);
+  }, [commentSelection]);
 
   useEffect(() => {
     const editorElement = editorElementRef.current;
@@ -1578,36 +1599,35 @@ function DiffCodeEditor({
           discussions,
           draftComments,
           true,
-          commentSelection,
+          commentSelectionRef.current,
           null,
         ),
       );
+      const decorationUpdater = createDiffDecorationUpdater(
+        diffDecorations,
+        monaco,
+        editorModel.rows,
+        discussions,
+        draftComments,
+        commentSelectionRef.current,
+      );
+      const updateCommentSelection = decorationUpdater.setCommentSelection;
+      updateCommentSelectionRef.current = updateCommentSelection;
       const discussionZoneRoots = applyDiffDiscussionZones(
         editor,
         discussionGroups,
         replyStateByDiscussionId,
-        onReplyToDiscussion,
+        (discussion, body) =>
+          onReplyToDiscussionRef.current(discussion, body),
       );
-      let interactionSelection: LineSelection = null;
       let interactionSelectionKey = "";
       const setInteractionSelection = (selection: LineSelection) => {
         const nextKey = selection
           ? `${selection.file}:${selection.startLine}-${selection.endLine}`
           : "";
         if (nextKey === interactionSelectionKey) return;
-        interactionSelection = selection;
         interactionSelectionKey = nextKey;
-        diffDecorations.set(
-          diffDecorationsForRows(
-            monaco,
-            editorModel.rows,
-            discussions,
-            draftComments,
-            true,
-            commentSelection,
-            interactionSelection,
-          ),
-        );
+        decorationUpdater.setInteractionSelection(selection);
       };
 
       const clickDisposable = editor.onMouseDown(
@@ -1821,6 +1841,9 @@ function DiffCodeEditor({
         mouseUpDisposable.dispose();
         mouseMoveDisposable.dispose();
         mouseLeaveDisposable.dispose();
+        if (updateCommentSelectionRef.current === updateCommentSelection) {
+          updateCommentSelectionRef.current = () => {};
+        }
         diffDecorations.clear();
         discussionZoneRoots.forEach((root) => root.unmount());
         editor.dispose();
@@ -1833,13 +1856,11 @@ function DiffCodeEditor({
       cleanup();
     };
   }, [
-    commentSelection,
     discussionGroups,
     discussions,
     draftComments,
     editorModel,
     file.filename,
-    onReplyToDiscussion,
     replyStateByDiscussionId,
     theme,
   ]);
@@ -2214,6 +2235,21 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+export function applySplitPanePercent(
+  container: HTMLDivElement,
+  separator: HTMLButtonElement,
+  percent: number,
+): number {
+  const nextPercent = clamp(
+    percent,
+    minSplitPanePercent,
+    maxSplitPanePercent,
+  );
+  container.style.setProperty("--context-pane-width", `${nextPercent}%`);
+  separator.setAttribute("aria-valuenow", String(nextPercent));
+  return nextPercent;
+}
+
 function symbolDecorationsForContext(
   monaco: MonacoApi,
   code: string,
@@ -2504,6 +2540,45 @@ export function diffDecorationsForRows(
 
     return [lineDecoration, ...symbolDecorations];
   });
+}
+
+export function createDiffDecorationUpdater(
+  decorations: Pick<Monaco.editor.IEditorDecorationsCollection, "set">,
+  monaco: MonacoApi,
+  rows: DiffRow[],
+  discussions: PullRequestDiscussion[],
+  draftComments: DraftReviewComment[],
+  initialCommentSelection: LineSelection,
+): {
+  setCommentSelection: (selection: LineSelection) => void;
+  setInteractionSelection: (selection: LineSelection) => void;
+} {
+  let commentSelection = initialCommentSelection;
+  let interactionSelection: LineSelection = null;
+  const update = () => {
+    decorations.set(
+      diffDecorationsForRows(
+        monaco,
+        rows,
+        discussions,
+        draftComments,
+        true,
+        commentSelection,
+        interactionSelection,
+      ),
+    );
+  };
+
+  return {
+    setCommentSelection(selection) {
+      commentSelection = selection;
+      update();
+    },
+    setInteractionSelection(selection) {
+      interactionSelection = selection;
+      update();
+    },
+  };
 }
 
 function newLineFromMouseEvent(

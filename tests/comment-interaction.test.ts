@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  applySplitPanePercent,
+  createDiffDecorationUpdater,
   diffDecorationsForRows,
   scrollDiffPaneWithArrowKey,
 } from "../src/renderer/src/App";
@@ -18,6 +20,72 @@ const monaco = {
 };
 
 describe("comment interactions", () => {
+  it("updates the selected comment lines without recreating the editor", () => {
+    const rows: DiffRow[] = [
+      {
+        kind: "added",
+        text: "+const answer = 42;",
+        newLine: 10,
+        diffPosition: 1,
+      },
+    ];
+    const decorationUpdates: Array<
+      ReadonlyArray<{ options: { className?: string | null } }>
+    > = [];
+    const updater = createDiffDecorationUpdater(
+      {
+        set: (decorations) => {
+          decorationUpdates.push(decorations);
+          return [];
+        },
+      },
+      monaco as never,
+      rows,
+      [],
+      [],
+      null,
+    );
+
+    updater.setCommentSelection({
+      file: "src/example.ts",
+      startLine: 10,
+      endLine: 10,
+    });
+
+    assert.equal(decorationUpdates.length, 1);
+    assert.match(
+      String(decorationUpdates[0]?.[0]?.options.className),
+      /\bdiff-monaco-line-selected-comment\b/,
+    );
+  });
+
+  it("applies split resizing directly without requiring a React render", () => {
+    const styleUpdates: Array<[string, string]> = [];
+    const ariaUpdates: Array<[string, string]> = [];
+    const container = {
+      style: {
+        setProperty: (name: string, value: string) => {
+          styleUpdates.push([name, value]);
+        },
+      },
+    };
+    const separator = {
+      setAttribute: (name: string, value: string) => {
+        ariaUpdates.push([name, value]);
+      },
+    };
+
+    const percent = applySplitPanePercent(
+      container as HTMLDivElement,
+      separator as HTMLButtonElement,
+      63.25,
+    );
+
+    assert.equal(percent, 63.25);
+    assert.deepEqual(styleUpdates, [["--context-pane-width", "63.25%"]]);
+    assert.deepEqual(ariaUpdates, [["aria-valuenow", "63.25"]]);
+  });
+
   it("marks changed lines as commentable without requiring a comment mode toggle", () => {
     const rows: DiffRow[] = [
       {
