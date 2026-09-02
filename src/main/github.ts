@@ -7,6 +7,7 @@ import type {
   PullRequestFile,
   PullRequestListItem,
   PullRequestRef,
+  PullRequestReviewSubmissionRequest,
   PullRequestSummary,
   RepositorySummary,
   SymbolContext,
@@ -14,6 +15,7 @@ import type {
 } from "../shared/types.js";
 import { replyTargetForDiscussion } from "../shared/discussions.js";
 import { pullRequestId } from "../shared/pr-url.js";
+import { buildGitHubReviewPayload } from "../shared/review-submission.js";
 import { extractSymbolContext } from "../shared/symbol-context.js";
 import { ensureSourceSnapshot } from "./source-snapshot.js";
 import { resolveTypeScriptSymbolContext } from "./typescript-intelligence.js";
@@ -153,12 +155,41 @@ async function ghEmpty(args: string[]): Promise<void> {
   }
 }
 
-function formatGhError(error: unknown): string {
+async function ghJsonInput<T>(args: string[], input: unknown): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      "gh",
+      ["api", ...args, "--input", "-"],
+      { maxBuffer: 25 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(formatGhError(error, stderr)));
+          return;
+        }
+
+        try {
+          resolve(JSON.parse(stdout) as T);
+        } catch {
+          reject(new Error("GitHub CLI returned an invalid JSON response."));
+        }
+      },
+    );
+
+    child.stdin?.end(JSON.stringify(input));
+  });
+}
+
+function formatGhError(error: unknown, stderrFallback = ""): string {
   if (error && typeof error === "object" && "stderr" in error) {
     const stderr = String((error as { stderr?: unknown }).stderr ?? "").trim();
     if (stderr) {
       return `GitHub CLI failed: ${stderr}`;
     }
+  }
+
+  const stderr = stderrFallback.trim();
+  if (stderr) {
+    return `GitHub CLI failed: ${stderr}`;
   }
 
   return "GitHub CLI failed. Make sure `gh` is installed and authenticated with `gh auth login`.";
@@ -223,6 +254,20 @@ export async function replyToPullRequestDiscussion(
   }
 
   return fetchPullRequest(request);
+}
+
+export async function submitPullRequestReview(
+  request: PullRequestReviewSubmissionRequest,
+): Promise<void> {
+  const payload = buildGitHubReviewPayload(request);
+  await ghJsonInput<GitHubReviewResponse>(
+    [
+      `repos/${request.owner}/${request.repo}/pulls/${request.number}/reviews`,
+      "--method",
+      "POST",
+    ],
+    payload,
+  );
 }
 
 export async function fetchRecentRepositories(): Promise<RepositorySummary[]> {

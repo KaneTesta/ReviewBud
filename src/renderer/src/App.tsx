@@ -7,6 +7,7 @@ import remarkGfm from "remark-gfm";
 import {
   ArrowLeft,
   ArrowRight,
+  BookOpen,
   CheckCircle2,
   Eye,
   FileCode2,
@@ -53,7 +54,6 @@ import {
 import {
   adjacentFile,
   completedAllFiles,
-  createDraftReview,
   reviewProgress,
   toggleFileViewed,
   upsertDraftComment,
@@ -157,9 +157,13 @@ export function App() {
     Record<string, { status: "submitting" | "error"; message?: string }>
   >({});
   const [finishReviewOpen, setFinishReviewOpen] = useState(false);
+  const [isPublishingReview, setIsPublishingReview] = useState(false);
+  const [finishReviewError, setFinishReviewError] = useState<string | null>(null);
+  const [prDescriptionOpen, setPrDescriptionOpen] = useState(false);
   const [fileSources, setFileSources] = useState<Record<string, string>>({});
   const [expandedDiffGaps, setExpandedDiffGaps] = useState<Record<string, string[]>>({});
   const contextPanePercentRef = useRef(50);
+  const reviewStateSaveRef = useRef<Promise<void>>(Promise.resolve());
   const reviewColumnsRef = useRef<HTMLDivElement | null>(null);
   const previousReviewProgressRef = useRef<ReturnType<typeof reviewProgress> | null>(
     null,
@@ -239,10 +243,15 @@ export function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!workspace || isTypingTarget(event.target)) return;
+      if (!workspace || prDescriptionOpen || isTypingTarget(event.target)) return;
       const hasShortcutModifier = event.metaKey || event.ctrlKey;
       if (!hasShortcutModifier) return;
 
+      if (isPrDescriptionShortcut(event)) {
+        event.preventDefault();
+        setPrDescriptionOpen(true);
+        return;
+      }
       if (event.key === "ArrowRight") {
         event.preventDefault();
         selectAdjacentFile("next");
@@ -267,7 +276,7 @@ export function App() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [currentFile, workspace]);
+  }, [currentFile, prDescriptionOpen, workspace]);
 
   function closeSymbolContext() {
     setSymbolContexts([]);
@@ -301,6 +310,7 @@ export function App() {
       setFileSources({});
       setExpandedDiffGaps({});
       setReplyStateByDiscussionId({});
+      setPrDescriptionOpen(false);
     } catch (loadError) {
       setError(
         loadError instanceof Error ? loadError.message : String(loadError),
@@ -353,11 +363,17 @@ export function App() {
 
   function persistWorkspace(nextWorkspace: ReviewWorkspace) {
     setWorkspace(nextWorkspace);
-    void window.prTool.saveReviewState(nextWorkspace.pullRequest.summary.id, {
-      notes: nextWorkspace.notes,
-      draftComments: nextWorkspace.draftComments ?? [],
-      draftReview: nextWorkspace.draftReview ?? null,
-    });
+    const save = reviewStateSaveRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        await window.prTool.saveReviewState(nextWorkspace.pullRequest.summary.id, {
+          notes: nextWorkspace.notes,
+          draftComments: nextWorkspace.draftComments ?? [],
+          draftReview: nextWorkspace.draftReview ?? null,
+        });
+      });
+    reviewStateSaveRef.current = save;
+    void save.catch(() => undefined);
   }
 
   function selectAdjacentFile(direction: "next" | "previous") {
@@ -399,10 +415,37 @@ export function App() {
     setCommentSelection(null);
   }
 
-  function saveDraftReview(outcome: ReviewOutcome, body: string) {
-    if (!workspace) return;
-    const draftReview = createDraftReview(outcome, body);
-    persistWorkspace(withReviewState(workspace, { draftReview }));
+  async function submitReview(outcome: ReviewOutcome, body: string) {
+    if (!workspace || isPublishingReview) return;
+    const { summary } = workspace.pullRequest;
+    setIsPublishingReview(true);
+    setFinishReviewError(null);
+
+    try {
+      await reviewStateSaveRef.current;
+      const nextWorkspace = await window.prTool.submitReview({
+        owner: summary.owner,
+        repo: summary.repo,
+        number: summary.number,
+        headSha: summary.headSha,
+        outcome,
+        body,
+        comments: workspace.draftComments ?? [],
+      });
+      setWorkspace(nextWorkspace);
+      setFinishReviewOpen(false);
+    } catch (submitError) {
+      setFinishReviewError(
+        submitError instanceof Error ? submitError.message : String(submitError),
+      );
+    } finally {
+      setIsPublishingReview(false);
+    }
+  }
+
+  function closeFinishReview() {
+    if (isPublishingReview) return;
+    setFinishReviewError(null);
     setFinishReviewOpen(false);
   }
 
@@ -529,6 +572,7 @@ export function App() {
     setExpandedDiffGaps({});
     setCommentSelection(null);
     setFinishReviewOpen(false);
+    setPrDescriptionOpen(false);
     setReplyStateByDiscussionId({});
   }
 
@@ -739,6 +783,7 @@ export function App() {
                   onMarkViewed={toggleCurrentFileViewed}
                   onCancelComment={() => setCommentSelection(null)}
                   onSaveComment={saveDraftComment}
+                  onViewPrDescription={() => setPrDescriptionOpen(true)}
                   onFinishReview={() => setFinishReviewOpen(true)}
                 />
               </>
@@ -764,13 +809,23 @@ export function App() {
         </section>
       </section>
       {workspace ? (
-        <FinishReviewModal
-          open={finishReviewOpen}
-          shortcuts={shortcuts}
-          existingDraft={workspace.draftReview ?? null}
-          onClose={() => setFinishReviewOpen(false)}
-          onSave={saveDraftReview}
-        />
+        <>
+          <FinishReviewModal
+            open={finishReviewOpen}
+            shortcuts={shortcuts}
+            existingDraft={workspace.draftReview ?? null}
+            isPublishing={isPublishingReview}
+            error={finishReviewError}
+            onClose={closeFinishReview}
+            onSubmit={submitReview}
+          />
+          <PrDescriptionModal
+            open={prDescriptionOpen}
+            content={workspace.pullRequest.summary.body}
+            shortcuts={shortcuts}
+            onClose={() => setPrDescriptionOpen(false)}
+          />
+        </>
       ) : null}
     </main>
   );
@@ -791,6 +846,7 @@ function keyboardShortcuts() {
     nextFile: `${modifier}+Right`,
     previousFile: `${modifier}+Left`,
     viewed: `${modifier}+Enter`,
+    prDescription: `${modifier}+Up`,
     finish: `${modifier}+Shift+Enter`,
     approve: `${modifier}+Shift+A`,
     requestChanges: `${modifier}+Shift+R`,
@@ -804,6 +860,21 @@ function isTypingTarget(target: EventTarget | null): boolean {
   if (typeof HTMLElement === "undefined") return false;
   if (!(target instanceof HTMLElement)) return false;
   return target.matches("input, textarea, select, [contenteditable='true']");
+}
+
+type PrDescriptionShortcutEvent = Pick<
+  KeyboardEvent,
+  "key" | "ctrlKey" | "metaKey" | "shiftKey" | "target"
+> & { altKey?: boolean };
+
+export function isPrDescriptionShortcut(event: PrDescriptionShortcutEvent): boolean {
+  return (
+    event.key === "ArrowUp" &&
+    (event.metaKey || event.ctrlKey) &&
+    !event.altKey &&
+    !event.shiftKey &&
+    !isTypingTarget(event.target)
+  );
 }
 
 function canListRepositories(): boolean {
@@ -900,6 +971,7 @@ function ReviewActionPane({
   onMarkViewed,
   onCancelComment,
   onSaveComment,
+  onViewPrDescription,
   onFinishReview,
 }: {
   workspace: ReviewWorkspace;
@@ -914,6 +986,7 @@ function ReviewActionPane({
     selection: Exclude<LineSelection, null>,
     body: string,
   ) => void;
+  onViewPrDescription: () => void;
   onFinishReview: () => void;
 }) {
   const paneRef = useRef<HTMLElement | null>(null);
@@ -992,6 +1065,13 @@ function ReviewActionPane({
           )}
         </ShortcutButton>
         <ShortcutButton
+          label="View PR description"
+          shortcut={shortcuts.prDescription}
+          onClick={onViewPrDescription}
+        >
+          <BookOpen size={15} aria-hidden="true" />
+        </ShortcutButton>
+        <ShortcutButton
           label="Finish review"
           shortcut={shortcuts.finish}
           intent="primary"
@@ -1012,9 +1092,6 @@ function ReviewActionPane({
           onSave={onSaveComment}
           onCancel={onCancelComment}
         />
-      ) : null}
-      {draftComments.length > 0 ? (
-        <DraftCommentList comments={draftComments} />
       ) : null}
     </section>
   );
@@ -1138,20 +1215,89 @@ function LineCommentComposer({
   );
 }
 
-function DraftCommentList({ comments }: { comments: DraftReviewComment[] }) {
+function PrDescriptionModal({
+  open,
+  content,
+  shortcuts,
+  onClose,
+}: {
+  open: boolean;
+  content: string;
+  shortcuts: ReturnType<typeof keyboardShortcuts>;
+  onClose: () => void;
+}) {
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const modalRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const previouslyFocused = document.activeElement;
+    window.setTimeout(() => closeButtonRef.current?.focus(), 0);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab" || !modalRef.current) return;
+      const focusable = Array.from(
+        modalRef.current.querySelectorAll<HTMLElement>(
+          "button:not([disabled]), a[href], [tabindex]:not([tabindex='-1'])",
+        ),
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      if (previouslyFocused instanceof HTMLElement) previouslyFocused.focus();
+    };
+  }, [open]);
+
+  if (!open) return null;
+
   return (
-    <div className="draft-comment-list" aria-label="Draft review comments">
-      {comments.map((comment) => (
-        <article key={comment.id} className="draft-comment">
-          <span>
-            {comment.file}:
-            {comment.startLine === comment.endLine
-              ? comment.startLine
-              : `${comment.startLine}-${comment.endLine}`}
-          </span>
-          <p>{comment.body}</p>
-        </article>
-      ))}
+    <div className="modal-backdrop" role="presentation">
+      <section
+        ref={modalRef}
+        className="review-modal pr-description-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="pr-description-modal-title"
+      >
+        <div className="modal-heading">
+          <div>
+            <h2 id="pr-description-modal-title">PR description</h2>
+            <p>Details provided by the pull request author.</p>
+          </div>
+          <button
+            ref={closeButtonRef}
+            type="button"
+            className="icon-button"
+            title={`Close (${shortcuts.cancel})`}
+            aria-label="Close PR description"
+            onClick={onClose}
+          >
+            <X size={15} aria-hidden="true" />
+          </button>
+        </div>
+        <div className="pr-description-modal-content">
+          {content.trim() ? (
+            <MarkdownBody body={content} />
+          ) : (
+            <p className="pr-description-empty">No PR description was provided.</p>
+          )}
+        </div>
+      </section>
     </div>
   );
 }
@@ -1160,14 +1306,18 @@ function FinishReviewModal({
   open,
   shortcuts,
   existingDraft,
+  isPublishing,
+  error,
   onClose,
-  onSave,
+  onSubmit,
 }: {
   open: boolean;
   shortcuts: ReturnType<typeof keyboardShortcuts>;
   existingDraft: DraftReviewSubmission | null;
+  isPublishing: boolean;
+  error: string | null;
   onClose: () => void;
-  onSave: (outcome: ReviewOutcome, body: string) => void;
+  onSubmit: (outcome: ReviewOutcome, body: string) => void;
 }) {
   const [outcome, setOutcome] = useState<ReviewOutcome>(
     existingDraft?.outcome ?? "comment",
@@ -1185,12 +1335,12 @@ function FinishReviewModal({
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (event.key === "Escape" && !isPublishing) {
         event.preventDefault();
         onClose();
         return;
       }
-      if (!(event.metaKey || event.ctrlKey) || !event.shiftKey) return;
+      if (isPublishing || !(event.metaKey || event.ctrlKey) || !event.shiftKey) return;
       if (event.key.toLowerCase() === "a") {
         event.preventDefault();
         setOutcome("approve");
@@ -1205,12 +1355,12 @@ function FinishReviewModal({
       }
       if (event.key === "Enter") {
         event.preventDefault();
-        onSave(outcome, body);
+        onSubmit(outcome, body);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [body, onClose, onSave, open, outcome]);
+  }, [body, isPublishing, onClose, onSubmit, open, outcome]);
 
   if (!open) return null;
 
@@ -1220,6 +1370,7 @@ function FinishReviewModal({
         className="review-modal"
         role="dialog"
         aria-modal="true"
+        aria-busy={isPublishing}
         aria-labelledby="finish-review-title"
       >
         <div className="modal-heading">
@@ -1233,6 +1384,7 @@ function FinishReviewModal({
             className="icon-button"
             title={`Close (${shortcuts.cancel})`}
             aria-label="Close finish review"
+            disabled={isPublishing}
             onClick={onClose}
           >
             <X size={15} aria-hidden="true" />
@@ -1247,18 +1399,21 @@ function FinishReviewModal({
             outcome="approve"
             active={outcome === "approve"}
             shortcut={shortcuts.approve}
+            disabled={isPublishing}
             onSelect={setOutcome}
           />
           <OutcomeButton
             outcome="request-changes"
             active={outcome === "request-changes"}
             shortcut={shortcuts.requestChanges}
+            disabled={isPublishing}
             onSelect={setOutcome}
           />
           <OutcomeButton
             outcome="comment"
             active={outcome === "comment"}
             shortcut={shortcuts.submitComment}
+            disabled={isPublishing}
             onSelect={setOutcome}
           />
         </div>
@@ -1267,13 +1422,20 @@ function FinishReviewModal({
           aria-label="Review comment"
           value={body}
           placeholder="Add a summary comment"
+          disabled={isPublishing}
           onChange={(event) => setBody(event.target.value)}
         />
+        {error ? (
+          <p className="review-submit-error" role="alert">
+            {error}
+          </p>
+        ) : null}
         <div className="modal-actions">
           <button
             type="button"
             className="secondary-action"
             title={`Cancel (${shortcuts.cancel})`}
+            disabled={isPublishing}
             onClick={onClose}
           >
             <X size={14} aria-hidden="true" />
@@ -1283,11 +1445,16 @@ function FinishReviewModal({
           <button
             type="button"
             className="primary-action"
-            title={`Save review (${shortcuts.finish})`}
-            onClick={() => onSave(outcome, body)}
+            title={`Publish review (${shortcuts.finish})`}
+            disabled={isPublishing}
+            onClick={() => onSubmit(outcome, body)}
           >
-            <Send size={14} aria-hidden="true" />
-            Save review
+            {isPublishing ? (
+              <Loader2 className="spin" size={14} aria-hidden="true" />
+            ) : (
+              <Send size={14} aria-hidden="true" />
+            )}
+            {isPublishing ? "Publishing…" : "Publish review"}
             <kbd>{shortcuts.finish}</kbd>
           </button>
         </div>
@@ -1300,11 +1467,13 @@ function OutcomeButton({
   outcome,
   active,
   shortcut,
+  disabled,
   onSelect,
 }: {
   outcome: ReviewOutcome;
   active: boolean;
   shortcut: string;
+  disabled: boolean;
   onSelect: (outcome: ReviewOutcome) => void;
 }) {
   const label =
@@ -1320,6 +1489,7 @@ function OutcomeButton({
       role="radio"
       aria-checked={active}
       title={`${label} (${shortcut})`}
+      disabled={disabled}
       onClick={() => onSelect(outcome)}
     >
       <CheckCircle2 size={15} aria-hidden="true" />
@@ -1515,17 +1685,17 @@ function DiffCodeEditor({
   const dragStartLineRef = useRef<number | null>(null);
   commentSelectionRef.current = commentSelection;
   const editorModel = useMemo(() => buildDiffEditorModel(rows), [rows]);
-  const discussionGroups = useMemo(
-    () => discussionsByPosition(discussions, rows),
-    [discussions, rows],
+  const commentGroups = useMemo(
+    () => commentGroupsByPosition(discussions, draftComments, rows),
+    [discussions, draftComments, rows],
   );
-  const discussionZoneHeight = discussionGroups.reduce(
-    (total, group) => total + discussionGroupHeight(group.discussions),
+  const commentZoneHeight = commentGroups.reduce(
+    (total, group) => total + commentGroupHeight(group),
     0,
   );
   const editorHeight = Math.max(
     240,
-    editorModel.lines.length * 18 + discussionZoneHeight + 16,
+    editorModel.lines.length * 18 + commentZoneHeight + 16,
   );
 
   useEffect(() => {
@@ -1615,7 +1785,7 @@ function DiffCodeEditor({
       updateCommentSelectionRef.current = updateCommentSelection;
       const discussionZoneRoots = applyDiffDiscussionZones(
         editor,
-        discussionGroups,
+        commentGroups,
         replyStateByDiscussionId,
         (discussion, body) =>
           onReplyToDiscussionRef.current(discussion, body),
@@ -1856,7 +2026,7 @@ function DiffCodeEditor({
       cleanup();
     };
   }, [
-    discussionGroups,
+    commentGroups,
     discussions,
     draftComments,
     editorModel,
@@ -2602,11 +2772,18 @@ function newLineFromClientPoint(
   return rows[lineNumber - 1]?.newLine ?? null;
 }
 
-function discussionsByPosition(
+export type DiffCommentGroup = {
+  position: number;
+  discussions: PullRequestDiscussion[];
+  draftComments: DraftReviewComment[];
+};
+
+export function commentGroupsByPosition(
   discussions: PullRequestDiscussion[],
+  draftComments: DraftReviewComment[],
   rows: DiffRow[],
-): Array<{ position: number; discussions: PullRequestDiscussion[] }> {
-  const grouped = new Map<number, PullRequestDiscussion[]>();
+): DiffCommentGroup[] {
+  const grouped = new Map<number, DiffCommentGroup>();
   const editorLineByDiffPosition = new Map<number, number>();
   const editorLineByRightLine = new Map<number, number>();
   const editorLineByLeftLine = new Map<number, number>();
@@ -2634,17 +2811,35 @@ function discussionsByPosition(
           ? editorLineByDiffPosition.get(discussion.position)
           : undefined;
     if (!position) continue;
-    grouped.set(position, [...(grouped.get(position) ?? []), discussion]);
+    const group = grouped.get(position) ?? {
+      position,
+      discussions: [],
+      draftComments: [],
+    };
+    group.discussions.push(discussion);
+    grouped.set(position, group);
   }
 
-  return [...grouped.entries()]
-    .sort(([left], [right]) => left - right)
-    .map(([position, group]) => ({ position, discussions: group }));
+  for (const draftComment of draftComments) {
+    const position = editorLineByRightLine.get(draftComment.endLine);
+    if (!position) continue;
+    const group = grouped.get(position) ?? {
+      position,
+      discussions: [],
+      draftComments: [],
+    };
+    group.draftComments.push(draftComment);
+    grouped.set(position, group);
+  }
+
+  return [...grouped.values()].sort(
+    (left, right) => left.position - right.position,
+  );
 }
 
 function applyDiffDiscussionZones(
   editor: Monaco.editor.IStandaloneCodeEditor,
-  groups: Array<{ position: number; discussions: PullRequestDiscussion[] }>,
+  groups: DiffCommentGroup[],
   replyStateByDiscussionId: Record<string, { status: "submitting" | "error"; message?: string }>,
   onReply: (discussion: PullRequestDiscussion, body: string) => void,
 ): Root[] {
@@ -2655,17 +2850,24 @@ function applyDiffDiscussionZones(
       node.className = "diff-discussion-zone";
       const root = createRoot(node);
       root.render(
-        <InlineDiscussions
-          discussions={group.discussions}
-          replyStateByDiscussionId={replyStateByDiscussionId}
-          onReply={onReply}
-        />,
+        <div className="inline-comment-group">
+          {group.discussions.length > 0 ? (
+            <InlineDiscussions
+              discussions={group.discussions}
+              replyStateByDiscussionId={replyStateByDiscussionId}
+              onReply={onReply}
+            />
+          ) : null}
+          {group.draftComments.length > 0 ? (
+            <InlineDraftComments comments={group.draftComments} />
+          ) : null}
+        </div>,
       );
       roots.push(root);
 
       accessor.addZone({
         afterLineNumber: group.position,
-        heightInPx: discussionGroupHeight(group.discussions),
+        heightInPx: commentGroupHeight(group),
         domNode: node,
       });
     }
@@ -2673,11 +2875,44 @@ function applyDiffDiscussionZones(
   return roots;
 }
 
-function discussionGroupHeight(discussions: PullRequestDiscussion[]): number {
-  return discussions.reduce((height, discussion) => {
+function commentGroupHeight(group: DiffCommentGroup): number {
+  const discussionHeight = group.discussions.reduce((height, discussion) => {
     const bodyLines = Math.ceil(discussion.body.length / 90);
     return height + Math.max(126, 110 + bodyLines * 18);
-  }, 8);
+  }, 0);
+  return group.draftComments.reduce((height, comment) => {
+    const bodyLines = Math.ceil(comment.body.length / 90);
+    return height + Math.max(98, 80 + bodyLines * 18);
+  }, discussionHeight + 8);
+}
+
+function InlineDraftComments({ comments }: { comments: DraftReviewComment[] }) {
+  return (
+    <div className="inline-draft-comments" aria-label="Draft review comments">
+      {comments.map((comment) => {
+        const lineLabel =
+          comment.startLine === comment.endLine
+            ? `Line ${comment.startLine}`
+            : `Lines ${comment.startLine}-${comment.endLine}`;
+        return (
+          <article
+            key={comment.id}
+            className="discussion inline-draft-comment"
+            aria-label={`Draft comment for ${lineLabel.toLowerCase()}`}
+          >
+            <div className="discussion-heading">
+              <MessageSquareText size={15} aria-hidden="true" />
+              <strong>{lineLabel}</strong>
+              <span className="discussion-chips">
+                <span className="discussion-chip draft">Draft</span>
+              </span>
+            </div>
+            <MarkdownBody body={comment.body} />
+          </article>
+        );
+      })}
+    </div>
+  );
 }
 
 function InlineDiscussions({

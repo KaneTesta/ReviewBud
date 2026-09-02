@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   applySplitPanePercent,
+  commentGroupsByPosition,
   createDiffDecorationUpdater,
   diffDecorationsForRows,
+  isPrDescriptionShortcut,
   scrollDiffPaneWithArrowKey,
 } from "../src/renderer/src/App";
-import type { DiffRow } from "../src/shared/types";
+import type { DiffRow, DraftReviewComment, PullRequestDiscussion } from "../src/shared/types";
 
 const monaco = {
   Range: class Range {
@@ -176,5 +178,105 @@ describe("comment interactions", () => {
 
     assert.equal(handled, false);
     assert.equal(prevented, false);
+  });
+
+  it("recognizes the PR description shortcut with Cmd or Ctrl plus ArrowUp", () => {
+    assert.equal(
+      isPrDescriptionShortcut({
+        key: "ArrowUp",
+        ctrlKey: false,
+        metaKey: true,
+        shiftKey: false,
+        target: null,
+      }),
+      true,
+    );
+    assert.equal(
+      isPrDescriptionShortcut({
+        key: "ArrowUp",
+        ctrlKey: true,
+        metaKey: false,
+        shiftKey: false,
+        target: null,
+      }),
+      true,
+    );
+  });
+
+  it("ignores PR description shortcut lookalikes with missing or extra modifiers", () => {
+    assert.equal(
+      isPrDescriptionShortcut({
+        key: "ArrowUp",
+        ctrlKey: false,
+        metaKey: false,
+        shiftKey: false,
+        target: null,
+      }),
+      false,
+    );
+    assert.equal(
+      isPrDescriptionShortcut({
+        key: "ArrowUp",
+        ctrlKey: false,
+        metaKey: true,
+        shiftKey: true,
+        target: null,
+      }),
+      false,
+    );
+  });
+
+  it("groups draft comments at their inline diff positions", () => {
+    const rows: DiffRow[] = [
+      { kind: "added", text: "+line 10", newLine: 10, diffPosition: 1 },
+      { kind: "added", text: "+line 11", newLine: 11, diffPosition: 2 },
+      { kind: "added", text: "+line 12", newLine: 12, diffPosition: 3 },
+    ];
+    const discussion: PullRequestDiscussion = {
+      id: "comment-1",
+      author: "reviewer",
+      body: "Published comment",
+      path: "src/example.ts",
+      line: 12,
+      side: "RIGHT",
+      createdAt: "2026-09-02T00:00:00.000Z",
+      url: "https://example.com/comment-1",
+      kind: "comment",
+    };
+    const drafts: DraftReviewComment[] = [
+      {
+        id: "draft-single",
+        file: "src/example.ts",
+        startLine: 10,
+        endLine: 10,
+        body: "Single-line draft",
+        createdAt: "2026-09-02T00:00:00.000Z",
+      },
+      {
+        id: "draft-range",
+        file: "src/example.ts",
+        startLine: 11,
+        endLine: 12,
+        body: "Range draft",
+        createdAt: "2026-09-02T00:00:00.000Z",
+      },
+      {
+        id: "draft-hidden",
+        file: "src/example.ts",
+        startLine: 99,
+        endLine: 99,
+        body: "Unavailable line",
+        createdAt: "2026-09-02T00:00:00.000Z",
+      },
+    ];
+
+    assert.deepEqual(commentGroupsByPosition([discussion], drafts, rows), [
+      { position: 1, discussions: [], draftComments: [drafts[0]] },
+      {
+        position: 3,
+        discussions: [discussion],
+        draftComments: [drafts[1]],
+      },
+    ]);
   });
 });

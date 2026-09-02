@@ -5,6 +5,7 @@ import type {
   DraftReviewSubmission,
   PullRequestDiscussionReplyRequest,
   PullRequestListItem,
+  PullRequestReviewSubmissionRequest,
   RepositorySummary,
   ReviewNote,
   ReviewWorkspace,
@@ -32,6 +33,7 @@ export interface PrToolApi {
   loadSymbolContext: (request: SymbolContextRequest) => Promise<SymbolContext>;
   loadFileSource: (request: SymbolContextRequest) => Promise<string>;
   replyToDiscussion: (request: PullRequestDiscussionReplyRequest) => Promise<ReviewWorkspace>;
+  submitReview: (request: PullRequestReviewSubmissionRequest) => Promise<ReviewWorkspace>;
 }
 
 const api: PrToolApi = {
@@ -56,6 +58,7 @@ const api: PrToolApi = {
   loadSymbolContext: (request) => ipcRenderer.invoke("pr:symbolContext", request) as Promise<SymbolContext>,
   loadFileSource: (request) => ipcRenderer.invoke("pr:fileSource", request) as Promise<string>,
   replyToDiscussion: (request) => ipcRenderer.invoke("pr:replyDiscussion", request) as Promise<ReviewWorkspace>,
+  submitReview: (request) => ipcRenderer.invoke("pr:submitReview", request) as Promise<ReviewWorkspace>,
 };
 
 contextBridge.exposeInMainWorld("prTool", api);

@@ -34,6 +34,33 @@ export class ReviewStorage {
     return workspace;
   }
 
+  async saveSubmittedPullRequest(pullRequest: CachedPullRequest): Promise<ReviewWorkspace> {
+    await this.ensureCacheDir();
+    const id = pullRequest.summary.id;
+    const existing = await this.loadExistingWorkspace(id);
+    const workspace: ReviewWorkspace = {
+      pullRequest,
+      notes: mergeNotes(existing?.notes ?? [], pullRequest.files.map((file) => file.filename)),
+      draftComments: [],
+      draftReview: null,
+    };
+
+    await writeFile(this.workspacePath(id), JSON.stringify(workspace, null, 2), "utf8");
+    return workspace;
+  }
+
+  async clearSubmittedReview(id: string): Promise<ReviewWorkspace> {
+    const workspace = await this.loadWorkspace(id);
+    const nextWorkspace: ReviewWorkspace = {
+      ...workspace,
+      draftComments: [],
+      draftReview: null,
+    };
+
+    await writeFile(this.workspacePath(id), JSON.stringify(nextWorkspace, null, 2), "utf8");
+    return nextWorkspace;
+  }
+
   async loadWorkspace(id: string): Promise<ReviewWorkspace> {
     const raw = await readFile(this.workspacePath(id), "utf8");
     return normalizeWorkspace(JSON.parse(raw) as ReviewWorkspace);

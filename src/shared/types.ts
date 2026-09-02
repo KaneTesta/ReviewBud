@@ -78,6 +78,13 @@ export interface DraftReviewSubmission {
   submittedAt: string;
 }
 
+export interface PullRequestReviewSubmissionRequest extends PullRequestRef {
+  headSha: string;
+  outcome: ReviewOutcome;
+  body: string;
+  comments: DraftReviewComment[];
+}
+
 export interface CachedPullRequest {
   summary: PullRequestSummary;
   files: PullRequestFile[];
