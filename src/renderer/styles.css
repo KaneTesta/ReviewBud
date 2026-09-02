@@ -18,8 +18,14 @@
   --primary-focus: #3151b7;
   --success: #1b8f3a;
   --danger-muted: #b6534f;
-  --diff-addition-bg: #aceebb;
-  --diff-deletion-bg: #ffcecb;
+  --diff-addition-line-bg: color-mix(in srgb, #aceebb 42%, transparent);
+  --diff-addition-gutter-bg: #aceebb;
+  --diff-addition-gutter-ink: #164b25;
+  --diff-deletion-line-bg: color-mix(in srgb, #ffcecb 42%, transparent);
+  --diff-deletion-gutter-bg: #ffcecb;
+  --diff-deletion-gutter-ink: #762522;
+  --diff-attention-bg: #fff8c5;
+  --diff-attention-edge: #d4a72c;
   --mono:
     "Linear Mono", "JetBrains Mono", "SFMono-Regular", ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
   --sans:
@@ -50,8 +56,14 @@
   --primary-focus: #5e69d1;
   --success: #27a644;
   --danger-muted: #d08a83;
-  --diff-addition-bg: color-mix(in srgb, #aceebb 42%, transparent);
-  --diff-deletion-bg: color-mix(in srgb, #ffcecb 42%, transparent);
+  --diff-addition-line-bg: color-mix(in srgb, #aceebb 24%, transparent);
+  --diff-addition-gutter-bg: color-mix(in srgb, #aceebb 58%, transparent);
+  --diff-addition-gutter-ink: #f7f8f8;
+  --diff-deletion-line-bg: color-mix(in srgb, #ffcecb 24%, transparent);
+  --diff-deletion-gutter-bg: color-mix(in srgb, #ffcecb 58%, transparent);
+  --diff-deletion-gutter-ink: #f7f8f8;
+  --diff-attention-bg: color-mix(in srgb, #fff8c5 28%, transparent);
+  --diff-attention-edge: #bb8009;
 }
 
 * {
@@ -611,11 +623,29 @@ a:focus-visible {
 }
 
 .diff-editor .diff-monaco-line-added {
-  background: var(--diff-addition-bg);
+  background: var(--diff-addition-line-bg);
 }
 
 .diff-editor .diff-monaco-line-removed {
-  background: var(--diff-deletion-bg);
+  background: var(--diff-deletion-line-bg);
+}
+
+.diff-editor .margin .diff-monaco-line-added {
+  background: var(--diff-addition-gutter-bg);
+}
+
+.diff-editor .margin .diff-monaco-line-removed {
+  background: var(--diff-deletion-gutter-bg);
+}
+
+.diff-editor .margin .line-numbers.diff-monaco-line-added {
+  color: var(--diff-addition-gutter-ink) !important;
+  font-weight: 600;
+}
+
+.diff-editor .margin .line-numbers.diff-monaco-line-removed {
+  color: var(--diff-deletion-gutter-ink) !important;
+  font-weight: 600;
 }
 
 .diff-editor .diff-monaco-line-hunk {
@@ -633,13 +663,13 @@ a:focus-visible {
 }
 
 .diff-editor .diff-monaco-line-comment {
-  background: rgb(245 202 66 / 0.26);
-  box-shadow: inset 3px 0 0 rgb(245 202 66 / 0.9);
+  background: var(--diff-attention-bg);
+  box-shadow: inset 3px 0 0 var(--diff-attention-edge);
 }
 
 .diff-editor .diff-monaco-line-draft-comment {
-  background: color-mix(in srgb, var(--primary) 16%, transparent);
-  box-shadow: inset 3px 0 0 var(--primary);
+  background: var(--diff-attention-bg);
+  box-shadow: inset 3px 0 0 var(--diff-attention-edge);
 }
 
 .diff-editor .diff-monaco-line-commentable {
@@ -651,8 +681,8 @@ a:focus-visible {
 }
 
 .diff-editor .diff-monaco-line-commentable:hover {
-  background: color-mix(in srgb, var(--primary) 22%, transparent);
-  box-shadow: inset 3px 0 0 var(--primary-hover);
+  background: var(--diff-attention-bg);
+  box-shadow: inset 3px 0 0 var(--diff-attention-edge);
 }
 
 .diff-editor .diff-monaco-line-selected-comment,
@@ -661,37 +691,15 @@ a:focus-visible {
 .diff-editor .diff-monaco-line-commentable.diff-monaco-line-selected-comment:hover,
 .diff-editor .diff-monaco-line-commentable.diff-monaco-line-hover-comment,
 .diff-editor .diff-monaco-line-commentable.diff-monaco-line-hover-comment:hover {
-  background: rgb(245 202 66 / 0.26);
+  background: var(--diff-attention-bg);
 }
 
 .diff-editor .diff-monaco-line-comment-selection-edge {
-  box-shadow: inset 3px 0 0 rgb(245 202 66 / 0.9);
+  box-shadow: inset 3px 0 0 var(--diff-attention-edge);
 }
 
 .diff-editor .diff-monaco-line-comment-selection-fill {
-  background: rgb(245 202 66 / 0.26);
-}
-
-:root[data-theme="light"] .diff-editor .diff-monaco-line-comment {
-  background: rgb(217 174 26 / 0.2);
-  box-shadow: inset 3px 0 0 rgb(217 174 26 / 0.82);
-}
-
-:root[data-theme="light"] .diff-editor .diff-monaco-line-selected-comment,
-:root[data-theme="light"] .diff-editor .diff-monaco-line-hover-comment,
-:root[data-theme="light"] .diff-editor .diff-monaco-line-commentable.diff-monaco-line-selected-comment,
-:root[data-theme="light"] .diff-editor .diff-monaco-line-commentable.diff-monaco-line-selected-comment:hover,
-:root[data-theme="light"] .diff-editor .diff-monaco-line-commentable.diff-monaco-line-hover-comment,
-:root[data-theme="light"] .diff-editor .diff-monaco-line-commentable.diff-monaco-line-hover-comment:hover {
-  background: rgb(217 174 26 / 0.2);
-}
-
-:root[data-theme="light"] .diff-editor .diff-monaco-line-comment-selection-edge {
-  box-shadow: inset 3px 0 0 rgb(217 174 26 / 0.82);
-}
-
-:root[data-theme="light"] .diff-editor .diff-monaco-line-comment-selection-fill {
-  background: rgb(217 174 26 / 0.2);
+  background: var(--diff-attention-bg);
 }
 
 .review-action-pane {

@@ -63,6 +63,7 @@ import { filterRepositories, repositoryOwners, sortRepositoriesForDisplay } from
 
 const defaultUrl = "";
 const themeStorageKey = "pr-tool-theme";
+const codeEditorLineHeight = 20;
 const monacoThemes = {
   dark: "pr-tool-dark",
   light: "pr-tool-light",
@@ -1695,7 +1696,7 @@ function DiffCodeEditor({
   );
   const editorHeight = Math.max(
     240,
-    editorModel.lines.length * 18 + commentZoneHeight + 16,
+    editorModel.lines.length * codeEditorLineHeight + commentZoneHeight + 16,
   );
 
   useEffect(() => {
@@ -1742,7 +1743,7 @@ function DiffCodeEditor({
         theme: monacoThemes[theme],
         fontFamily: "var(--mono)",
         fontSize: 12,
-        lineHeight: 18,
+        lineHeight: codeEditorLineHeight,
         minimap: { enabled: false },
         folding: true,
         showFoldingControls: "always",
@@ -2189,7 +2190,7 @@ function ContextCodeEditor({
   const lineCount = editorCode.split("\n").length;
   const defaultEditorHeight = Math.min(
     420,
-    Math.max(minContextEditorHeight, lineCount * 18 + 16),
+    Math.max(minContextEditorHeight, lineCount * codeEditorLineHeight + 16),
   );
   const [editorHeight, setEditorHeight] = useState(defaultEditorHeight);
 
@@ -2225,7 +2226,7 @@ function ContextCodeEditor({
         theme: monacoThemes[theme],
         fontFamily: "var(--mono)",
         fontSize: 12,
-        lineHeight: 18,
+        lineHeight: codeEditorLineHeight,
         minimap: { enabled: false },
         scrollbar: {
           alwaysConsumeMouseWheel: false,
