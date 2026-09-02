@@ -9,6 +9,8 @@ import type {
   RepositorySummary,
   ReviewNote,
   ReviewWorkspace,
+  SnippetExplanation,
+  SnippetExplanationRequest,
   SymbolContext,
   SymbolContextRequest,
 } from "../shared/types.js";
@@ -32,6 +34,7 @@ export interface PrToolApi {
   ) => Promise<ReviewWorkspace>;
   loadSymbolContext: (request: SymbolContextRequest) => Promise<SymbolContext>;
   loadFileSource: (request: SymbolContextRequest) => Promise<string>;
+  explainSnippet: (request: SnippetExplanationRequest) => Promise<SnippetExplanation>;
   replyToDiscussion: (request: PullRequestDiscussionReplyRequest) => Promise<ReviewWorkspace>;
   submitReview: (request: PullRequestReviewSubmissionRequest) => Promise<ReviewWorkspace>;
 }
@@ -57,6 +60,7 @@ const api: PrToolApi = {
   saveReviewState: (id, state) => ipcRenderer.invoke("pr:saveReviewState", id, state) as Promise<ReviewWorkspace>,
   loadSymbolContext: (request) => ipcRenderer.invoke("pr:symbolContext", request) as Promise<SymbolContext>,
   loadFileSource: (request) => ipcRenderer.invoke("pr:fileSource", request) as Promise<string>,
+  explainSnippet: (request) => ipcRenderer.invoke("pr:explainSnippet", request) as Promise<SnippetExplanation>,
   replyToDiscussion: (request) => ipcRenderer.invoke("pr:replyDiscussion", request) as Promise<ReviewWorkspace>,
   submitReview: (request) => ipcRenderer.invoke("pr:submitReview", request) as Promise<ReviewWorkspace>,
 };

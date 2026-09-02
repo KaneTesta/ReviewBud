@@ -6,7 +6,10 @@ import {
   createDiffDecorationUpdater,
   diffDecorationsForRows,
   isPrDescriptionShortcut,
+  editorLineForSelectedRange,
   scrollDiffPaneWithArrowKey,
+  snippetActionForKey,
+  snippetActionMenuPosition,
 } from "../src/renderer/src/App";
 import type { DiffRow, DraftReviewComment, PullRequestDiscussion } from "../src/shared/types";
 
@@ -22,6 +25,43 @@ const monaco = {
 };
 
 describe("comment interactions", () => {
+  it("places the inline composer after the selected range's final new-side line", () => {
+    const rows: DiffRow[] = [
+      { kind: "context", text: " before", oldLine: 7, newLine: 7 },
+      { kind: "removed", text: "-removed", oldLine: 8 },
+      { kind: "added", text: "+first", newLine: 8 },
+      { kind: "added", text: "+second", newLine: 9 },
+    ];
+
+    assert.equal(editorLineForSelectedRange(rows, 8, 9), 4);
+    assert.equal(editorLineForSelectedRange(rows, 99, 100), null);
+  });
+
+  it("clamps the snippet action menu inside the editor", () => {
+    assert.deepEqual(snippetActionMenuPosition(500, 300, 490, 295), {
+      left: 282,
+      top: 196,
+    });
+    assert.deepEqual(snippetActionMenuPosition(500, 300, -20, -10), {
+      left: 8,
+      top: 8,
+    });
+  });
+
+  it("routes unmodified C and E keys to the open snippet menu actions", () => {
+    assert.equal(snippetActionForKey({ key: "c" }), "comment");
+    assert.equal(snippetActionForKey({ key: "C" }), "comment");
+    assert.equal(snippetActionForKey({ key: "e" }), "explain");
+    assert.equal(snippetActionForKey({ key: "E" }), "explain");
+  });
+
+  it("ignores modified keys and unrelated snippet menu keys", () => {
+    assert.equal(snippetActionForKey({ key: "c", metaKey: true }), null);
+    assert.equal(snippetActionForKey({ key: "e", ctrlKey: true }), null);
+    assert.equal(snippetActionForKey({ key: "e", altKey: true }), null);
+    assert.equal(snippetActionForKey({ key: "x" }), null);
+  });
+
   it("updates the selected comment lines without recreating the editor", () => {
     const rows: DiffRow[] = [
       {

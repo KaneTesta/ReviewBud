@@ -19,6 +19,7 @@ import {
   MessageSquareText,
   RefreshCw,
   Send,
+  Sparkles,
   Star,
   Sun,
   X,
@@ -32,6 +33,8 @@ import type {
   RepositorySummary,
   ReviewOutcome,
   ReviewWorkspace,
+  SnippetExplanation,
+  SnippetExplanationRequest,
   SymbolContext,
   DiffRow,
 } from "../../shared/types";
@@ -51,6 +54,7 @@ import {
   expandCollapsedDiffRows,
   tokenizeCodeLine,
 } from "../../shared/symbol-context";
+import { extractSnippetFromDiffRows } from "../../shared/snippet-explanation";
 import {
   adjacentFile,
   completedAllFiles,
@@ -111,11 +115,19 @@ const minContextEditorHeight = 96;
 const maxContextEditorHeight = 900;
 const minSplitPanePercent = 24;
 const maxSplitPanePercent = 76;
+const inlineCommentComposerHeight = 196;
 type LineSelection = {
   file: string;
   startLine: number;
   endLine: number;
 } | null;
+type SnippetExplanationEntry = {
+  id: number;
+  request: SnippetExplanationRequest;
+  status: "loading" | "complete" | "error";
+  explanation?: SnippetExplanation;
+  error?: string;
+};
 
 export function isClosedPullRequest(pullRequest: Pick<PullRequestListItem, "state">): boolean {
   return pullRequest.state.toLowerCase() === "closed";
@@ -153,6 +165,9 @@ export function App() {
     "idle",
   );
   const [symbolError, setSymbolError] = useState<string | null>(null);
+  const [snippetExplanations, setSnippetExplanations] = useState<
+    SnippetExplanationEntry[]
+  >([]);
   const [commentSelection, setCommentSelection] = useState<LineSelection>(null);
   const [replyStateByDiscussionId, setReplyStateByDiscussionId] = useState<
     Record<string, { status: "submitting" | "error"; message?: string }>
@@ -169,6 +184,7 @@ export function App() {
   const previousReviewProgressRef = useRef<ReturnType<typeof reviewProgress> | null>(
     null,
   );
+  const snippetExplanationIdRef = useRef(0);
 
   useEffect(() => {
     document.documentElement.dataset.platform = navigator.platform;
@@ -227,7 +243,8 @@ export function App() {
   const showSymbolSplit =
     symbolState === "loading" ||
     symbolState === "error" ||
-    symbolContexts.length > 0;
+    symbolContexts.length > 0 ||
+    snippetExplanations.length > 0;
   const nextTheme = theme === "dark" ? "light" : "dark";
   const shortcuts = useMemo(() => keyboardShortcuts(), []);
 
@@ -281,6 +298,7 @@ export function App() {
 
   function closeSymbolContext() {
     setSymbolContexts([]);
+    setSnippetExplanations([]);
     setSymbolState("idle");
     setSymbolError(null);
   }
@@ -295,6 +313,68 @@ export function App() {
     }
   }
 
+  function closeSnippetExplanation(id: number) {
+    setSnippetExplanations((current) =>
+      current.filter((entry) => entry.id !== id),
+    );
+  }
+
+  async function explainSnippet(
+    selection: Exclude<LineSelection, null>,
+    code: string,
+  ) {
+    if (!workspace) return;
+    const { summary } = workspace.pullRequest;
+    const id = ++snippetExplanationIdRef.current;
+    const request: SnippetExplanationRequest = {
+      owner: summary.owner,
+      repo: summary.repo,
+      number: summary.number,
+      pullRequestTitle: summary.title,
+      pullRequestDescription: summary.body,
+      file: selection.file,
+      filePatch:
+        workspace.pullRequest.files.find(
+          (pullRequestFile) => pullRequestFile.filename === selection.file,
+        )?.patch ?? "",
+      startLine: selection.startLine,
+      endLine: selection.endLine,
+      code,
+      headRepoFullName: summary.headRepoFullName,
+      headSha: summary.headSha,
+    };
+    setSnippetExplanations((current) => [
+      ...current,
+      { id, request, status: "loading" },
+    ]);
+
+    try {
+      const explanation = await window.prTool.explainSnippet(request);
+      setSnippetExplanations((current) =>
+        current.map((entry) =>
+          entry.id === id
+            ? { ...entry, status: "complete", explanation }
+            : entry,
+        ),
+      );
+    } catch (explanationError) {
+      setSnippetExplanations((current) =>
+        current.map((entry) =>
+          entry.id === id
+            ? {
+                ...entry,
+                status: "error",
+                error:
+                  explanationError instanceof Error
+                    ? explanationError.message
+                    : String(explanationError),
+              }
+            : entry,
+        ),
+      );
+    }
+  }
+
   async function loadPullRequest(nextUrl = url) {
     setIsLoading(true);
     setError(null);
@@ -305,6 +385,7 @@ export function App() {
       setWorkspace(nextWorkspace);
       setSelectedFile(nextWorkspace.pullRequest.files[0]?.filename ?? null);
       setSymbolContexts([]);
+      setSnippetExplanations([]);
       setSymbolState("idle");
       setSymbolError(null);
       setUrl(nextWorkspace.pullRequest.summary.url);
@@ -567,6 +648,7 @@ export function App() {
     setWorkspace(null);
     setSelectedFile(null);
     setSymbolContexts([]);
+    setSnippetExplanations([]);
     setSymbolState("idle");
     setSymbolError(null);
     setFileSources({});
@@ -743,6 +825,10 @@ export function App() {
                     onOpenSymbol={openSymbolContext}
                     onToggleCollapsedGap={toggleCollapsedDiffGap}
                     onSelectCommentRange={setCommentSelection}
+                    shortcuts={shortcuts}
+                    onCancelComment={() => setCommentSelection(null)}
+                    onSaveComment={saveDraftComment}
+                    onExplainSnippet={explainSnippet}
                     onReplyToDiscussion={replyToDiscussion}
                   />
                   {showSymbolSplit ? (
@@ -762,11 +848,13 @@ export function App() {
                       />
                       <SymbolContextPanel
                         contexts={symbolContexts}
+                        explanations={snippetExplanations}
                         state={symbolState}
                         error={symbolError}
                         theme={theme}
                         onClose={closeSymbolContext}
                         onCloseContext={closeSymbolContextAt}
+                        onCloseExplanation={closeSnippetExplanation}
                         onOpenSymbol={(file, line, column, symbol) =>
                           openSymbolContext(file, line, column, symbol, true)
                         }
@@ -777,13 +865,10 @@ export function App() {
                 <ReviewActionPane
                   workspace={workspace}
                   currentFile={currentFile}
-                  commentSelection={commentSelection}
                   shortcuts={shortcuts}
                   onNextFile={() => selectAdjacentFile("next")}
                   onPreviousFile={() => selectAdjacentFile("previous")}
                   onMarkViewed={toggleCurrentFileViewed}
-                  onCancelComment={() => setCommentSelection(null)}
-                  onSaveComment={saveDraftComment}
                   onViewPrDescription={() => setPrDescriptionOpen(true)}
                   onFinishReview={() => setFinishReviewOpen(true)}
                 />
@@ -965,28 +1050,19 @@ export function scrollDiffPaneWithArrowKey(
 function ReviewActionPane({
   workspace,
   currentFile,
-  commentSelection,
   shortcuts,
   onNextFile,
   onPreviousFile,
   onMarkViewed,
-  onCancelComment,
-  onSaveComment,
   onViewPrDescription,
   onFinishReview,
 }: {
   workspace: ReviewWorkspace;
   currentFile: PullRequestFile;
-  commentSelection: LineSelection;
   shortcuts: ReturnType<typeof keyboardShortcuts>;
   onNextFile: () => void;
   onPreviousFile: () => void;
   onMarkViewed: () => void;
-  onCancelComment: () => void;
-  onSaveComment: (
-    selection: Exclude<LineSelection, null>,
-    body: string,
-  ) => void;
   onViewPrDescription: () => void;
   onFinishReview: () => void;
 }) {
@@ -1018,7 +1094,7 @@ function ReviewActionPane({
         "--review-action-pane-height",
       );
     };
-  }, [commentSelection, draftComments.length]);
+  }, [draftComments.length]);
 
   return (
     <section
@@ -1081,19 +1157,6 @@ function ReviewActionPane({
           <GitPullRequestArrow size={15} aria-hidden="true" />
         </ShortcutButton>
       </div>
-      {commentSelection ? (
-        <div className="comment-mode-hint" role="status">
-          Add your draft comment below.
-        </div>
-      ) : null}
-      {commentSelection ? (
-        <LineCommentComposer
-          selection={commentSelection}
-          shortcuts={shortcuts}
-          onSave={onSaveComment}
-          onCancel={onCancelComment}
-        />
-      ) : null}
     </section>
   );
 }
@@ -1213,6 +1276,58 @@ function LineCommentComposer({
         </button>
       </div>
     </form>
+  );
+}
+
+function SnippetActionMenu({
+  selection,
+  left,
+  top,
+  onComment,
+  onExplain,
+}: {
+  selection: Exclude<LineSelection, null>;
+  left: number;
+  top: number;
+  onComment: () => void;
+  onExplain?: () => void;
+}) {
+  const lineLabel =
+    selection.startLine === selection.endLine
+      ? `Line ${selection.startLine}`
+      : `Lines ${selection.startLine}-${selection.endLine}`;
+
+  return (
+    <div
+      className="snippet-action-menu"
+      role="menu"
+      aria-label={`Actions for ${lineLabel.toLowerCase()}`}
+      style={{ left, top }}
+    >
+      <span className="snippet-action-menu-label">{lineLabel}</span>
+      <button
+        type="button"
+        role="menuitem"
+        title="Comment on code (C)"
+        autoFocus
+        onClick={onComment}
+      >
+        <MessageSquareText size={15} aria-hidden="true" />
+        <span>Comment on code</span>
+        <kbd>C</kbd>
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        disabled={!onExplain}
+        title={onExplain ? "Ask Codex to explain this snippet (E)" : undefined}
+        onClick={onExplain}
+      >
+        <Sparkles className="ai-action-icon" size={15} aria-hidden="true" />
+        <span>Explain this snippet</span>
+        <kbd>E</kbd>
+      </button>
+    </div>
   );
 }
 
@@ -1541,6 +1656,10 @@ function DiffViewer({
   onOpenSymbol,
   onToggleCollapsedGap,
   onSelectCommentRange,
+  shortcuts,
+  onCancelComment,
+  onSaveComment,
+  onExplainSnippet,
   onReplyToDiscussion,
 }: {
   file: PullRequestFile;
@@ -1561,6 +1680,16 @@ function DiffViewer({
   ) => void;
   onToggleCollapsedGap: (file: PullRequestFile, row: DiffRow) => void;
   onSelectCommentRange: (selection: Exclude<LineSelection, null>) => void;
+  shortcuts: ReturnType<typeof keyboardShortcuts>;
+  onCancelComment: () => void;
+  onSaveComment: (
+    selection: Exclude<LineSelection, null>,
+    body: string,
+  ) => void;
+  onExplainSnippet?: (
+    selection: Exclude<LineSelection, null>,
+    code: string,
+  ) => void;
   onReplyToDiscussion: (discussion: PullRequestDiscussion, body: string) => void;
 }) {
   const rows = useMemo(
@@ -1635,6 +1764,10 @@ function DiffViewer({
           onOpenSymbol={onOpenSymbol}
           onToggleCollapsedGap={onToggleCollapsedGap}
           onSelectCommentRange={onSelectCommentRange}
+          shortcuts={shortcuts}
+          onCancelComment={onCancelComment}
+          onSaveComment={onSaveComment}
+          onExplainSnippet={onExplainSnippet}
           replyStateByDiscussionId={replyStateByDiscussionId}
           onReplyToDiscussion={onReplyToDiscussion}
         />
@@ -1653,6 +1786,10 @@ function DiffCodeEditor({
   onOpenSymbol,
   onToggleCollapsedGap,
   onSelectCommentRange,
+  shortcuts,
+  onCancelComment,
+  onSaveComment,
+  onExplainSnippet,
   replyStateByDiscussionId,
   onReplyToDiscussion,
 }: {
@@ -1671,6 +1808,16 @@ function DiffCodeEditor({
   ) => void;
   onToggleCollapsedGap: (file: PullRequestFile, row: DiffRow) => void;
   onSelectCommentRange: (selection: Exclude<LineSelection, null>) => void;
+  shortcuts: ReturnType<typeof keyboardShortcuts>;
+  onCancelComment: () => void;
+  onSaveComment: (
+    selection: Exclude<LineSelection, null>,
+    body: string,
+  ) => void;
+  onExplainSnippet?: (
+    selection: Exclude<LineSelection, null>,
+    code: string,
+  ) => void;
   replyStateByDiscussionId: Record<string, { status: "submitting" | "error"; message?: string }>;
   onReplyToDiscussion: (discussion: PullRequestDiscussion, body: string) => void;
 }) {
@@ -1678,12 +1825,26 @@ function DiffCodeEditor({
   const onOpenSymbolRef = useRef(onOpenSymbol);
   const onToggleCollapsedGapRef = useRef(onToggleCollapsedGap);
   const onSelectCommentRangeRef = useRef(onSelectCommentRange);
+  const onCancelCommentRef = useRef(onCancelComment);
+  const onSaveCommentRef = useRef(onSaveComment);
+  const onExplainSnippetRef = useRef(onExplainSnippet);
   const onReplyToDiscussionRef = useRef(onReplyToDiscussion);
   const commentSelectionRef = useRef(commentSelection);
   const updateCommentSelectionRef = useRef<(selection: LineSelection) => void>(
     () => {},
   );
+  const updateInlineComposerRef = useRef<(selection: LineSelection) => void>(
+    () => {},
+  );
+  const updateInteractionSelectionRef = useRef<(selection: LineSelection) => void>(
+    () => {},
+  );
   const dragStartLineRef = useRef<number | null>(null);
+  const [snippetActionMenu, setSnippetActionMenu] = useState<{
+    selection: Exclude<LineSelection, null>;
+    left: number;
+    top: number;
+  } | null>(null);
   commentSelectionRef.current = commentSelection;
   const editorModel = useMemo(() => buildDiffEditorModel(rows), [rows]);
   const commentGroups = useMemo(
@@ -1696,7 +1857,10 @@ function DiffCodeEditor({
   );
   const editorHeight = Math.max(
     240,
-    editorModel.lines.length * codeEditorLineHeight + commentZoneHeight + 16,
+    editorModel.lines.length * codeEditorLineHeight +
+      commentZoneHeight +
+      (commentSelection ? inlineCommentComposerHeight : 0) +
+      16,
   );
 
   useEffect(() => {
@@ -1712,12 +1876,72 @@ function DiffCodeEditor({
   }, [onSelectCommentRange]);
 
   useEffect(() => {
+    onCancelCommentRef.current = onCancelComment;
+  }, [onCancelComment]);
+
+  useEffect(() => {
+    onSaveCommentRef.current = onSaveComment;
+  }, [onSaveComment]);
+
+  useEffect(() => {
+    onExplainSnippetRef.current = onExplainSnippet;
+  }, [onExplainSnippet]);
+
+  useEffect(() => {
     onReplyToDiscussionRef.current = onReplyToDiscussion;
   }, [onReplyToDiscussion]);
 
   useLayoutEffect(() => {
     updateCommentSelectionRef.current(commentSelection);
+    updateInlineComposerRef.current(commentSelection);
   }, [commentSelection]);
+
+  useLayoutEffect(() => {
+    updateInteractionSelectionRef.current(snippetActionMenu?.selection ?? null);
+  }, [snippetActionMenu]);
+
+  useEffect(() => {
+    if (!snippetActionMenu) return;
+    const dismissOnPointerDown = (event: PointerEvent) => {
+      if (
+        event.target instanceof Element &&
+        event.target.closest(".snippet-action-menu")
+      ) {
+        return;
+      }
+      setSnippetActionMenu(null);
+    };
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSnippetActionMenu(null);
+        return;
+      }
+
+      const action = snippetActionForKey(event);
+      if (!action) return;
+      if (action === "explain" && !onExplainSnippetRef.current) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      if (action === "comment") {
+        onSelectCommentRangeRef.current(snippetActionMenu.selection);
+      } else {
+        const code = extractSnippetFromDiffRows(
+          editorModel.rows,
+          snippetActionMenu.selection.startLine,
+          snippetActionMenu.selection.endLine,
+        );
+        onExplainSnippetRef.current?.(snippetActionMenu.selection, code);
+      }
+      setSnippetActionMenu(null);
+    };
+    window.addEventListener("pointerdown", dismissOnPointerDown, true);
+    window.addEventListener("keydown", dismissOnEscape, true);
+    return () => {
+      window.removeEventListener("pointerdown", dismissOnPointerDown, true);
+      window.removeEventListener("keydown", dismissOnEscape, true);
+    };
+  }, [editorModel.rows, snippetActionMenu]);
 
   useEffect(() => {
     const editorElement = editorElementRef.current;
@@ -1791,6 +2015,49 @@ function DiffCodeEditor({
         (discussion, body) =>
           onReplyToDiscussionRef.current(discussion, body),
       );
+      let composerZoneId: string | null = null;
+      let composerRoot: Root | null = null;
+      const clearInlineComposer = () => {
+        if (composerZoneId) {
+          editor.changeViewZones((accessor) => accessor.removeZone(composerZoneId!));
+          composerZoneId = null;
+        }
+        composerRoot?.unmount();
+        composerRoot = null;
+      };
+      const setInlineComposerSelection = (selection: LineSelection) => {
+        clearInlineComposer();
+        if (!selection) return;
+        const afterLineNumber = editorLineForSelectedRange(
+          editorModel.rows,
+          selection.startLine,
+          selection.endLine,
+        );
+        if (!afterLineNumber) return;
+
+        const node = document.createElement("div");
+        node.className = "diff-inline-composer-zone";
+        composerRoot = createRoot(node);
+        composerRoot.render(
+          <LineCommentComposer
+            selection={selection}
+            shortcuts={shortcuts}
+            onSave={(nextSelection, body) =>
+              onSaveCommentRef.current(nextSelection, body)
+            }
+            onCancel={() => onCancelCommentRef.current()}
+          />,
+        );
+        editor.changeViewZones((accessor) => {
+          composerZoneId = accessor.addZone({
+            afterLineNumber,
+            heightInPx: inlineCommentComposerHeight,
+            domNode: node,
+          });
+        });
+      };
+      updateInlineComposerRef.current = setInlineComposerSelection;
+      setInlineComposerSelection(commentSelectionRef.current);
       let interactionSelectionKey = "";
       const setInteractionSelection = (selection: LineSelection) => {
         const nextKey = selection
@@ -1799,6 +2066,26 @@ function DiffCodeEditor({
         if (nextKey === interactionSelectionKey) return;
         interactionSelectionKey = nextKey;
         decorationUpdater.setInteractionSelection(selection);
+      };
+      updateInteractionSelectionRef.current = setInteractionSelection;
+      setInteractionSelection(snippetActionMenu?.selection ?? null);
+
+      const openSnippetActionMenu = (
+        selection: Exclude<LineSelection, null>,
+        clientX: number,
+        clientY: number,
+      ) => {
+        if (commentSelectionRef.current) {
+          onCancelCommentRef.current();
+        }
+        const editorRect = editorElement.getBoundingClientRect();
+        const position = snippetActionMenuPosition(
+          editorRect.width,
+          editorRect.height,
+          clientX - editorRect.left,
+          clientY - editorRect.top,
+        );
+        setSnippetActionMenu({ selection, ...position });
       };
 
       const clickDisposable = editor.onMouseDown(
@@ -1878,13 +2165,12 @@ function DiffCodeEditor({
           const endLine =
             newLineFromMouseEvent(event, editorModel.rows) ??
             dragStartLineRef.current;
-          onSelectCommentRangeRef.current({
+          openSnippetActionMenu({
             file: file.filename,
             startLine: Math.min(dragStartLineRef.current, endLine),
             endLine: Math.max(dragStartLineRef.current, endLine),
-          });
+          }, event.event.browserEvent.clientX, event.event.browserEvent.clientY);
           dragStartLineRef.current = null;
-          setInteractionSelection(null);
         },
       );
       const mouseMoveDisposable = editor.onMouseMove(
@@ -1961,17 +2247,32 @@ function DiffCodeEditor({
             event.clientX,
             event.clientY,
           ) ?? dragStartLineRef.current;
-        onSelectCommentRangeRef.current({
+        openSnippetActionMenu({
           file: file.filename,
           startLine: Math.min(dragStartLineRef.current, endLine),
           endLine: Math.max(dragStartLineRef.current, endLine),
-        });
+        }, event.clientX, event.clientY);
         dragStartLineRef.current = null;
-        setInteractionSelection(null);
         editor.setSelection(new monaco.Range(1, 1, 1, 1));
         if (editorElement.hasPointerCapture?.(event.pointerId)) {
           editorElement.releasePointerCapture?.(event.pointerId);
         }
+      };
+      const openSnippetMenuFromContextClick = (event: MouseEvent) => {
+        const newLine = newLineFromClientPoint(
+          editor,
+          editorModel.rows,
+          event.clientX,
+          event.clientY,
+        );
+        if (!newLine) return;
+        event.preventDefault();
+        event.stopPropagation();
+        openSnippetActionMenu(
+          { file: file.filename, startLine: newLine, endLine: newLine },
+          event.clientX,
+          event.clientY,
+        );
       };
       const scrollDiffWithKeyboard = (event: KeyboardEvent) => {
         const scrollContainer = editorElement.closest(".diff");
@@ -1984,6 +2285,7 @@ function DiffCodeEditor({
       editorElement.addEventListener("pointerdown", commentPointerDown, true);
       editorElement.addEventListener("pointermove", commentPointerMove, true);
       editorElement.addEventListener("pointerup", commentPointerUp, true);
+      editorElement.addEventListener("contextmenu", openSnippetMenuFromContextClick, true);
       editorElement.addEventListener("keydown", scrollDiffWithKeyboard, true);
 
       cleanup = () => {
@@ -2004,6 +2306,11 @@ function DiffCodeEditor({
         );
         editorElement.removeEventListener("pointerup", commentPointerUp, true);
         editorElement.removeEventListener(
+          "contextmenu",
+          openSnippetMenuFromContextClick,
+          true,
+        );
+        editorElement.removeEventListener(
           "keydown",
           scrollDiffWithKeyboard,
           true,
@@ -2015,6 +2322,13 @@ function DiffCodeEditor({
         if (updateCommentSelectionRef.current === updateCommentSelection) {
           updateCommentSelectionRef.current = () => {};
         }
+        if (updateInlineComposerRef.current === setInlineComposerSelection) {
+          updateInlineComposerRef.current = () => {};
+        }
+        if (updateInteractionSelectionRef.current === setInteractionSelection) {
+          updateInteractionSelectionRef.current = () => {};
+        }
+        clearInlineComposer();
         diffDecorations.clear();
         discussionZoneRoots.forEach((root) => root.unmount());
         editor.dispose();
@@ -2037,30 +2351,61 @@ function DiffCodeEditor({
   ]);
 
   return (
-    <div
-      ref={editorElementRef}
-      className="diff-editor diff-editor-comment-mode"
-      style={{ height: `${editorHeight}px` }}
-      aria-label={`${file.filename} diff`}
-    />
+    <div className="diff-editor-shell">
+      <div
+        ref={editorElementRef}
+        className="diff-editor diff-editor-comment-mode"
+        style={{ height: `${editorHeight}px` }}
+        aria-label={`${file.filename} diff`}
+      />
+      {snippetActionMenu ? (
+        <SnippetActionMenu
+          {...snippetActionMenu}
+          onComment={() => {
+            onSelectCommentRangeRef.current(snippetActionMenu.selection);
+            setSnippetActionMenu(null);
+          }}
+          onExplain={
+            onExplainSnippet
+              ? () => {
+                  const code = extractSnippetFromDiffRows(
+                    editorModel.rows,
+                    snippetActionMenu.selection.startLine,
+                    snippetActionMenu.selection.endLine,
+                  );
+                  onExplainSnippetRef.current?.(
+                    snippetActionMenu.selection,
+                    code,
+                  );
+                  setSnippetActionMenu(null);
+                }
+              : undefined
+          }
+        />
+      ) : null}
+    </div>
   );
 }
 
 function SymbolContextPanel({
   contexts,
+  explanations,
   state,
   error,
   theme,
   onClose,
   onCloseContext,
+  onCloseExplanation,
   onOpenSymbol,
 }: {
   contexts: SymbolContext[];
+  explanations: SnippetExplanationEntry[];
   state: "idle" | "loading" | "error";
   error: string | null;
   theme: ThemeMode;
   onClose: () => void;
   onCloseContext: (index: number) => void;
+  onCloseExplanation: (id: number) => void;
   onOpenSymbol: (
     file: string,
     line: number,
@@ -2069,17 +2414,19 @@ function SymbolContextPanel({
   ) => void;
 }) {
   const latestContext = contexts.at(-1) ?? null;
+  const latestExplanation = explanations.at(-1) ?? null;
+  const entryCount = contexts.length + explanations.length;
   const contextStackRef = useRef<HTMLDivElement | null>(null);
   const latestContextRef = useRef<HTMLElement | null>(null);
-  const previousContextCountRef = useRef(contexts.length);
+  const previousContextCountRef = useRef(entryCount);
 
   useEffect(() => {
-    if (contexts.length <= previousContextCountRef.current) {
-      previousContextCountRef.current = contexts.length;
+    if (entryCount <= previousContextCountRef.current) {
+      previousContextCountRef.current = entryCount;
       return;
     }
 
-    previousContextCountRef.current = contexts.length;
+    previousContextCountRef.current = entryCount;
     const animationFrame = window.requestAnimationFrame(() => {
       const contextStack = contextStackRef.current;
       const latestContextElement = latestContextRef.current;
@@ -2094,7 +2441,7 @@ function SymbolContextPanel({
     });
 
     return () => window.cancelAnimationFrame(animationFrame);
-  }, [contexts.length]);
+  }, [entryCount]);
 
   return (
     <section className="panel symbol-context">
@@ -2104,6 +2451,10 @@ function SymbolContextPanel({
           <span>
             {state === "loading"
               ? "Loading"
+              : latestExplanation?.status === "loading"
+                ? "Explaining"
+                : latestExplanation
+                  ? "AI explanation"
               : latestContext
                 ? latestContext.source === "language-service" ||
                   latestContext.source === "language-server"
@@ -2127,14 +2478,16 @@ function SymbolContextPanel({
           {error ?? "Could not load symbol context."}
         </p>
       ) : null}
-      {contexts.length > 0 ? (
+      {entryCount > 0 ? (
         <div className="context-stack" ref={contextStackRef}>
           {contexts.map((context, contextIndex) => (
             <article
               className="context-entry"
               key={`${context.file}-${context.startLine}-${context.symbol}-${contextIndex}`}
               ref={
-                contextIndex === contexts.length - 1 ? latestContextRef : null
+                contextIndex === contexts.length - 1 && explanations.length === 0
+                  ? latestContextRef
+                  : null
               }
             >
               <div className="context-entry-heading">
@@ -2159,6 +2512,53 @@ function SymbolContextPanel({
                 theme={theme}
                 onOpenSymbol={onOpenSymbol}
               />
+            </article>
+          ))}
+          {explanations.map((entry, explanationIndex) => (
+            <article
+              className="context-entry explanation-entry"
+              key={entry.id}
+              ref={
+                explanationIndex === explanations.length - 1
+                  ? latestContextRef
+                  : null
+              }
+            >
+              <div className="context-entry-heading">
+                <div className="context-title explanation-title">
+                  <strong>
+                    <Sparkles size={15} aria-hidden="true" />
+                    Explain snippet
+                  </strong>
+                  <span>
+                    {entry.request.file} · lines {entry.request.startLine}-
+                    {entry.request.endLine}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label={`Close explanation for ${entry.request.file}`}
+                  title="Close explanation"
+                  onClick={() => onCloseExplanation(entry.id)}
+                >
+                  <X size={14} aria-hidden="true" />
+                </button>
+              </div>
+              {entry.status === "loading" ? (
+                <div className="explanation-loading" role="status">
+                  <Loader2 className="spin" size={16} aria-hidden="true" />
+                  Asking Codex about this snippet…
+                </div>
+              ) : null}
+              {entry.status === "error" ? (
+                <p className="context-error">{entry.error}</p>
+              ) : null}
+              {entry.explanation ? (
+                <div className="snippet-explanation">
+                  <MarkdownBody body={entry.explanation.markdown} />
+                </div>
+              ) : null}
             </article>
           ))}
         </div>
@@ -2404,6 +2804,46 @@ function ContextCodeEditor({
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+export function snippetActionMenuPosition(
+  editorWidth: number,
+  editorHeight: number,
+  pointerX: number,
+  pointerY: number,
+): { left: number; top: number } {
+  const inset = 8;
+  const menuWidth = 210;
+  const menuHeight = 96;
+  return {
+    left: clamp(pointerX, inset, Math.max(inset, editorWidth - menuWidth - inset)),
+    top: clamp(pointerY, inset, Math.max(inset, editorHeight - menuHeight - inset)),
+  };
+}
+
+export function snippetActionForKey(event: {
+  key: string;
+  altKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  shiftKey?: boolean;
+}): "comment" | "explain" | null {
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+    return null;
+  }
+  if (event.key.toLowerCase() === "c") return "comment";
+  if (event.key.toLowerCase() === "e") return "explain";
+  return null;
+}
+
+export function editorLineForSelectedRange(
+  rows: DiffRow[],
+  firstLine: number,
+  secondLine: number,
+): number | null {
+  const endLine = Math.max(firstLine, secondLine);
+  const editorLine = rows.findIndex((row) => row.newLine === endLine);
+  return editorLine >= 0 ? editorLine + 1 : null;
 }
 
 export function applySplitPanePercent(

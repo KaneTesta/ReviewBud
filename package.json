@@ -15,6 +15,7 @@
     "install:macos-service": "bash scripts/install-macos-review-pr-service.sh"
   },
   "dependencies": {
+    "@openai/codex-sdk": "^0.152.1",
     "lucide-react": "^0.468.0",
     "monaco-editor": "^0.55.1",
     "pyright": "^1.1.409",

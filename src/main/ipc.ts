@@ -1,9 +1,10 @@
 import { app, BrowserWindow, ipcMain } from "electron";
 import { fetchFileSource, fetchPullRequest, fetchRecentPullRequests, fetchRecentRepositories, fetchSymbolContext, replyToPullRequestDiscussion, searchRepositories, submitPullRequestReview } from "./github.js";
 import { ReviewStorage } from "./storage.js";
+import { explainSnippetWithCodex } from "./codex.js";
 import { parsePullRequestUrl, pullRequestId } from "../shared/pr-url.js";
 import { sortRepositoriesForDisplay } from "../shared/repositories.js";
-import type { DraftReviewComment, DraftReviewSubmission, PullRequestDiscussionReplyRequest, PullRequestReviewSubmissionRequest, ReviewNote, SymbolContextRequest } from "../shared/types.js";
+import type { DraftReviewComment, DraftReviewSubmission, PullRequestDiscussionReplyRequest, PullRequestReviewSubmissionRequest, ReviewNote, SnippetExplanationRequest, SymbolContextRequest } from "../shared/types.js";
 
 const titleBarThemes = {
   dark: {
@@ -69,6 +70,10 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle("pr:fileSource", async (_event, request: SymbolContextRequest) =>
     fetchFileSource(request),
+  );
+
+  ipcMain.handle("pr:explainSnippet", async (_event, request: SnippetExplanationRequest) =>
+    explainSnippetWithCodex(request, app.getPath("userData")),
   );
 
   ipcMain.handle("pr:replyDiscussion", async (_event, request: PullRequestDiscussionReplyRequest) => {

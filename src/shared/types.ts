@@ -152,3 +152,23 @@ export interface SymbolContext {
   sourceCode?: string;
   source?: "language-service" | "language-server" | "raw-file";
 }
+
+export interface SnippetExplanationRequest extends PullRequestRef {
+  pullRequestTitle: string;
+  pullRequestDescription: string;
+  file: string;
+  filePatch: string;
+  startLine: number;
+  endLine: number;
+  code: string;
+  headRepoFullName: string;
+  headSha: string;
+}
+
+export interface SnippetExplanation {
+  file: string;
+  startLine: number;
+  endLine: number;
+  code: string;
+  markdown: string;
+}
