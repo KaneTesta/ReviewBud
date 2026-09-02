@@ -44,34 +44,50 @@ interface GitHubPullResponse {
 }
 
 interface GraphQLReviewDecisionResponse {
-  repository?: {
-    pullRequest?: {
-      reviewDecision?: string | null;
-    };
-  };
-}
-
-interface GraphQLReviewThreadsResponse {
-  repository?: {
-    pullRequest?: {
-      reviewThreads?: {
-        nodes?: Array<{
-          isResolved: boolean;
-          isOutdated: boolean;
-          comments: {
-            nodes?: Array<{
-              databaseId?: number | null;
-            } | null> | null;
-          };
-        } | null> | null;
+  data?: {
+    repository?: {
+      pullRequest?: {
+        reviewDecision?: string | null;
       };
     };
   };
 }
 
-interface ReviewThreadState {
+export interface GraphQLReviewThreadsResponse {
+  data?: {
+    repository?: {
+      pullRequest?: {
+        reviewThreads?: {
+          nodes?: Array<{
+            isResolved: boolean;
+            isOutdated: boolean;
+            path: string;
+            line?: number | null;
+            originalLine?: number | null;
+            diffSide: "LEFT" | "RIGHT";
+            startLine?: number | null;
+            originalStartLine?: number | null;
+            startDiffSide?: "LEFT" | "RIGHT" | null;
+            comments: {
+              nodes?: Array<{
+                databaseId?: number | null;
+              } | null> | null;
+            };
+          } | null> | null;
+        };
+      };
+    };
+  };
+}
+
+interface ReviewThreadMetadata {
   isResolved: boolean;
   isOutdated: boolean;
+  path: string;
+  line?: number;
+  side: "LEFT" | "RIGHT";
+  startLine?: number;
+  startSide?: "LEFT" | "RIGHT";
 }
 
 interface GitHubFileResponse {
@@ -91,7 +107,7 @@ interface GitHubReviewResponse {
   html_url?: string;
 }
 
-interface GitHubCommentResponse {
+export interface GitHubCommentResponse {
   id: number;
   user?: { login?: string };
   body?: string | null;
@@ -150,14 +166,14 @@ function formatGhError(error: unknown): string {
 
 export async function fetchPullRequest(ref: PullRequestRef): Promise<CachedPullRequest> {
   const path = `repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`;
-  const [pr, files, reviews, comments, diff, reviewDecision, reviewThreadStates] = await Promise.all([
+  const [pr, files, reviews, comments, diff, reviewDecision, reviewThreadMetadata] = await Promise.all([
     ghJson<GitHubPullResponse>([path]),
     ghJson<GitHubFileResponse[]>([`${path}/files`, "--paginate"]),
     ghJson<GitHubReviewResponse[]>([`${path}/reviews`, "--paginate"]),
     ghJson<GitHubCommentResponse[]>([`${path}/comments`, "--paginate"]),
     ghText([path, "-H", "Accept: application/vnd.github.v3.diff"]),
     fetchReviewDecision(ref),
-    fetchReviewThreadStates(ref),
+    fetchReviewThreadMetadata(ref),
   ]);
 
   return {
@@ -165,7 +181,7 @@ export async function fetchPullRequest(ref: PullRequestRef): Promise<CachedPullR
     files: files.map(normalizeFile),
     discussions: [
       ...reviews.filter((review) => review.body?.trim()).map(normalizeReview),
-      ...comments.map((comment) => normalizeComment(comment, reviewThreadStates.get(comment.id))),
+      ...comments.map((comment) => normalizeComment(comment, reviewThreadMetadata.get(comment.id))),
     ].sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
     diff,
     loadedAt: new Date().toISOString(),
@@ -435,13 +451,15 @@ async function fetchReviewDecision(ref: PullRequestRef): Promise<string | null> 
       `number=${ref.number}`,
     ]);
 
-    return response.repository?.pullRequest?.reviewDecision ?? null;
+    return response.data?.repository?.pullRequest?.reviewDecision ?? null;
   } catch {
     return null;
   }
 }
 
-async function fetchReviewThreadStates(ref: PullRequestRef): Promise<Map<number, ReviewThreadState>> {
+async function fetchReviewThreadMetadata(
+  ref: PullRequestRef,
+): Promise<Map<number, ReviewThreadMetadata>> {
   const query = `
     query($owner: String!, $repo: String!, $number: Int!) {
       repository(owner: $owner, name: $repo) {
@@ -450,6 +468,13 @@ async function fetchReviewThreadStates(ref: PullRequestRef): Promise<Map<number,
             nodes {
               isResolved
               isOutdated
+              path
+              line
+              originalLine
+              diffSide
+              startLine
+              originalStartLine
+              startDiffSide
               comments(first: 100) {
                 nodes {
                   databaseId
@@ -475,22 +500,34 @@ async function fetchReviewThreadStates(ref: PullRequestRef): Promise<Map<number,
       `number=${ref.number}`,
     ]);
 
-    const states = new Map<number, ReviewThreadState>();
-    for (const thread of response.repository?.pullRequest?.reviewThreads?.nodes ?? []) {
-      if (!thread) continue;
-      for (const comment of thread.comments.nodes ?? []) {
-        if (comment?.databaseId == null) continue;
-        states.set(comment.databaseId, {
-          isResolved: thread.isResolved,
-          isOutdated: thread.isOutdated,
-        });
-      }
-    }
-
-    return states;
+    return reviewThreadMetadataByCommentId(response);
   } catch {
     return new Map();
   }
+}
+
+export function reviewThreadMetadataByCommentId(
+  response: GraphQLReviewThreadsResponse,
+): Map<number, ReviewThreadMetadata> {
+  const metadataByCommentId = new Map<number, ReviewThreadMetadata>();
+  for (const thread of response.data?.repository?.pullRequest?.reviewThreads?.nodes ?? []) {
+    if (!thread) continue;
+    const metadata: ReviewThreadMetadata = {
+      isResolved: thread.isResolved,
+      isOutdated: thread.isOutdated,
+      path: thread.path,
+      line: thread.line ?? undefined,
+      side: thread.diffSide,
+      startLine: thread.startLine ?? undefined,
+      startSide: thread.startDiffSide ?? undefined,
+    };
+    for (const comment of thread.comments.nodes ?? []) {
+      if (comment?.databaseId == null) continue;
+      metadataByCommentId.set(comment.databaseId, metadata);
+    }
+  }
+
+  return metadataByCommentId;
 }
 
 function normalizeSummary(
@@ -546,19 +583,22 @@ function normalizeReview(review: GitHubReviewResponse): PullRequestDiscussion {
   };
 }
 
-function normalizeComment(comment: GitHubCommentResponse, threadState?: ReviewThreadState): PullRequestDiscussion {
+export function normalizeComment(
+  comment: GitHubCommentResponse,
+  threadMetadata?: ReviewThreadMetadata,
+): PullRequestDiscussion {
   return {
     id: `comment-${comment.id}`,
     author: comment.user?.login ?? "unknown",
     body: comment.body ?? "",
-    path: comment.path,
-    position: comment.position ?? undefined,
-    line: comment.line ?? undefined,
-    side: comment.side ?? undefined,
-    startLine: comment.start_line ?? undefined,
-    startSide: comment.start_side ?? undefined,
-    isResolved: threadState?.isResolved,
-    isOutdated: threadState?.isOutdated,
+    path: threadMetadata?.path ?? comment.path,
+    position: threadMetadata ? undefined : comment.position ?? undefined,
+    line: threadMetadata?.line ?? comment.line ?? undefined,
+    side: threadMetadata?.side ?? comment.side ?? undefined,
+    startLine: threadMetadata?.startLine ?? comment.start_line ?? undefined,
+    startSide: threadMetadata?.startSide ?? comment.start_side ?? undefined,
+    isResolved: threadMetadata?.isResolved,
+    isOutdated: threadMetadata?.isOutdated,
     createdAt: comment.created_at,
     url: comment.html_url ?? "",
     kind: "comment",

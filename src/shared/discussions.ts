@@ -7,6 +7,20 @@ export function discussionsForFile(
   return discussions.filter((discussion) => discussion.path === filename);
 }
 
+export function discussionHasDiffLocation(discussion: PullRequestDiscussion): boolean {
+  return discussion.line != null || discussion.position != null;
+}
+
+export function shouldShowDiscussionAtFileTop(
+  discussion: PullRequestDiscussion,
+): boolean {
+  return (
+    !discussionHasDiffLocation(discussion) &&
+    discussion.isResolved !== true &&
+    discussion.isOutdated !== true
+  );
+}
+
 export function discussionAffectsDiffPosition(
   discussion: PullRequestDiscussion,
   position: number,

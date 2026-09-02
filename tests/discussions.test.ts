@@ -3,9 +3,11 @@ import { describe, it } from "node:test";
 import {
   discussionAffectsDiffRow,
   discussionAffectsDiffPosition,
+  discussionHasDiffLocation,
   replyTargetForDiscussion,
   discussionStateLabels,
   discussionsForFile,
+  shouldShowDiscussionAtFileTop,
   shouldCollapseDiscussion,
 } from "../src/shared/discussions";
 import type { PullRequestDiscussion } from "../src/shared/types";
@@ -36,6 +38,59 @@ describe("discussionsForFile", () => {
     assert.deepEqual(
       discussionsForFile(discussions, "src/app.ts").map((discussion) => discussion.id),
       ["comment-1"],
+    );
+  });
+
+  it("keeps resolved comments with a modern line location in the inline diff", () => {
+    const resolvedDiscussion: PullRequestDiscussion = {
+      id: "comment-2",
+      author: "teammate",
+      body: "This has been addressed.",
+      path: "src/app.ts",
+      line: 42,
+      side: "RIGHT",
+      isResolved: true,
+      createdAt: "2026-05-21T00:02:00Z",
+      url: "https://github.com/owner/repo/pull/1#discussion_r2",
+      kind: "comment",
+    };
+
+    assert.equal(discussionHasDiffLocation(resolvedDiscussion), true);
+    assert.equal(
+      discussionHasDiffLocation({ ...resolvedDiscussion, line: undefined, position: 3 }),
+      true,
+    );
+    assert.equal(
+      discussionHasDiffLocation({
+        ...resolvedDiscussion,
+        line: undefined,
+        position: undefined,
+      }),
+      false,
+    );
+  });
+
+  it("hides resolved comments with no current diff location instead of moving them to the file top", () => {
+    const unlocatedDiscussion: PullRequestDiscussion = {
+      id: "comment-3",
+      author: "teammate",
+      body: "This has been addressed.",
+      path: "src/app.ts",
+      isResolved: true,
+      isOutdated: true,
+      createdAt: "2026-05-21T00:03:00Z",
+      url: "https://github.com/owner/repo/pull/1#discussion_r3",
+      kind: "comment",
+    };
+
+    assert.equal(shouldShowDiscussionAtFileTop(unlocatedDiscussion), false);
+    assert.equal(
+      shouldShowDiscussionAtFileTop({
+        ...unlocatedDiscussion,
+        isResolved: false,
+        isOutdated: false,
+      }),
+      true,
     );
   });
 

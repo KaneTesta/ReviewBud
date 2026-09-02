@@ -37,9 +37,11 @@ import type {
 import {
   discussionAffectsDiffRow,
   discussionAffectsDiffPosition,
+  discussionHasDiffLocation,
   discussionStateLabels,
   discussionsForFile,
   shouldCollapseDiscussion,
+  shouldShowDiscussionAtFileTop,
 } from "../../shared/discussions";
 import {
   buildDiffRows,
@@ -1401,11 +1403,11 @@ function DiffViewer({
     [draftComments, file.filename],
   );
   const topDiscussions = useMemo(
-    () => fileDiscussions.filter((discussion) => !discussion.position),
+    () => fileDiscussions.filter(shouldShowDiscussionAtFileTop),
     [fileDiscussions],
   );
   const lineDiscussions = useMemo(
-    () => fileDiscussions.filter((discussion) => discussion.position),
+    () => fileDiscussions.filter(discussionHasDiffLocation),
     [fileDiscussions],
   );
 
