@@ -70,6 +70,29 @@ describe("snippet explanations", () => {
     assert.match(prompt, /do not modify files/i);
   });
 
+  it("builds a question prompt that can follow relevant code without a hop limit", () => {
+    const prompt = buildSnippetExplanationPrompt({
+      owner: "openai",
+      repo: "review-bud",
+      number: 42,
+      pullRequestTitle: "Explain review behavior",
+      pullRequestDescription: "",
+      file: "src/example.ts",
+      filePatch: "+const result = resolveValue(input);",
+      startLine: 9,
+      endLine: 9,
+      code: "const result = resolveValue(input);",
+      question: "Where does the fallback value ultimately come from?",
+      headRepoFullName: "openai/review-bud",
+      headSha: "0123456789abcdef",
+    });
+
+    assert.match(prompt, /reviewer question/i);
+    assert.match(prompt, /where does the fallback value ultimately come from\?/i);
+    assert.match(prompt, /any number of relevant files/i);
+    assert.match(prompt, /continue until you have enough evidence/i);
+  });
+
   it("bounds large PR context fields and marks omitted content", () => {
     const prompt = buildSnippetExplanationPrompt(
       {
@@ -121,6 +144,28 @@ describe("snippet explanations", () => {
           headSha: "0123456789abcdef",
         }),
       /snippet is empty/i,
+    );
+  });
+
+  it("rejects a blank reviewer question", () => {
+    assert.throws(
+      () =>
+        buildSnippetExplanationPrompt({
+          owner: "openai",
+          repo: "review-bud",
+          number: 42,
+          pullRequestTitle: "Blank question",
+          pullRequestDescription: "",
+          file: "src/example.ts",
+          filePatch: "",
+          startLine: 1,
+          endLine: 1,
+          code: "const value = helper();",
+          question: "   \n",
+          headRepoFullName: "openai/review-bud",
+          headSha: "0123456789abcdef",
+        }),
+      /question is empty/i,
     );
   });
 

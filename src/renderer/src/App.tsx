@@ -128,6 +128,10 @@ type SnippetExplanationEntry = {
   explanation?: SnippetExplanation;
   error?: string;
 };
+type SnippetQuestionDraft = {
+  selection: Exclude<LineSelection, null>;
+  code: string;
+} | null;
 
 export function isClosedPullRequest(pullRequest: Pick<PullRequestListItem, "state">): boolean {
   return pullRequest.state.toLowerCase() === "closed";
@@ -322,6 +326,7 @@ export function App() {
   async function explainSnippet(
     selection: Exclude<LineSelection, null>,
     code: string,
+    question?: string,
   ) {
     if (!workspace) return;
     const { summary } = workspace.pullRequest;
@@ -340,6 +345,7 @@ export function App() {
       startLine: selection.startLine,
       endLine: selection.endLine,
       code,
+      ...(question ? { question: question.trim() } : {}),
       headRepoFullName: summary.headRepoFullName,
       headSha: summary.headSha,
     };
@@ -938,6 +944,7 @@ function keyboardShortcuts() {
     requestChanges: `${modifier}+Shift+R`,
     submitComment: `${modifier}+Shift+M`,
     saveComment: `${modifier}+S`,
+    askSnippet: `${modifier}+Enter`,
     cancel: "Esc",
   };
 }
@@ -1283,18 +1290,106 @@ function LineCommentComposer({
   );
 }
 
+function SnippetQuestionComposer({
+  selection,
+  shortcuts,
+  onAsk,
+  onCancel,
+}: {
+  selection: Exclude<LineSelection, null>;
+  shortcuts: ReturnType<typeof keyboardShortcuts>;
+  onAsk: (question: string) => void;
+  onCancel: () => void;
+}) {
+  const [question, setQuestion] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    textareaRef.current?.focus();
+  }, [selection]);
+
+  function ask() {
+    if (question.trim()) onAsk(question.trim());
+  }
+
+  return (
+    <form
+      className="line-comment-composer snippet-question-composer"
+      onPointerDown={stopDiffViewZoneEventPropagation}
+      onMouseDown={stopDiffViewZoneEventPropagation}
+      onClick={stopDiffViewZoneEventPropagation}
+      onContextMenu={stopDiffViewZoneEventPropagation}
+      onSubmit={(event) => {
+        event.preventDefault();
+        ask();
+      }}
+    >
+      <div className="composer-heading">
+        <strong>
+          {selection.file}:
+          {selection.startLine === selection.endLine
+            ? selection.startLine
+            : `${selection.startLine}-${selection.endLine}`}
+        </strong>
+        <span>Ask about this snippet</span>
+      </div>
+      <textarea
+        ref={textareaRef}
+        value={question}
+        aria-label="Question about selected code"
+        placeholder="What would you like Codex to investigate?"
+        onChange={(event) => setQuestion(event.target.value)}
+        onKeyDown={(event) => {
+          if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+            event.preventDefault();
+            ask();
+          }
+          if (event.key === "Escape") {
+            event.preventDefault();
+            onCancel();
+          }
+        }}
+      />
+      <div className="composer-actions">
+        <button
+          type="button"
+          className="secondary-action"
+          title={`Cancel (${shortcuts.cancel})`}
+          onClick={onCancel}
+        >
+          <X size={14} aria-hidden="true" />
+          Cancel
+          <kbd>{shortcuts.cancel}</kbd>
+        </button>
+        <button
+          type="submit"
+          className="primary-action"
+          disabled={!question.trim()}
+          title={`Ask Codex (${shortcuts.askSnippet})`}
+        >
+          <Sparkles size={14} aria-hidden="true" />
+          Ask Codex
+          <kbd>{shortcuts.askSnippet}</kbd>
+        </button>
+      </div>
+    </form>
+  );
+}
+
 function SnippetActionMenu({
   selection,
   left,
   top,
   onComment,
   onExplain,
+  onAsk,
 }: {
   selection: Exclude<LineSelection, null>;
   left: number;
   top: number;
   onComment: () => void;
   onExplain?: () => void;
+  onAsk?: () => void;
 }) {
   const lineLabel =
     selection.startLine === selection.endLine
@@ -1330,6 +1425,17 @@ function SnippetActionMenu({
         <Sparkles className="ai-action-icon" size={15} aria-hidden="true" />
         <span>Explain this snippet</span>
         <kbd>E</kbd>
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        disabled={!onAsk}
+        title={onAsk ? "Ask Codex about this snippet (A)" : undefined}
+        onClick={onAsk}
+      >
+        <Sparkles className="ai-action-icon" size={15} aria-hidden="true" />
+        <span>Ask about this snippet</span>
+        <kbd>A</kbd>
       </button>
     </div>
   );
@@ -1693,6 +1799,7 @@ function DiffViewer({
   onExplainSnippet?: (
     selection: Exclude<LineSelection, null>,
     code: string,
+    question?: string,
   ) => void;
   onReplyToDiscussion: (discussion: PullRequestDiscussion, body: string) => void;
 }) {
@@ -1821,6 +1928,7 @@ function DiffCodeEditor({
   onExplainSnippet?: (
     selection: Exclude<LineSelection, null>,
     code: string,
+    question?: string,
   ) => void;
   replyStateByDiscussionId: Record<string, { status: "submitting" | "error"; message?: string }>;
   onReplyToDiscussion: (discussion: PullRequestDiscussion, body: string) => void;
@@ -1845,12 +1953,15 @@ function DiffCodeEditor({
   );
   const snippetActionMenuSelectionRef = useRef<LineSelection>(null);
   const dragStartLineRef = useRef<number | null>(null);
+  const [snippetQuestion, setSnippetQuestion] = useState<SnippetQuestionDraft>(null);
+  const snippetQuestionRef = useRef<SnippetQuestionDraft>(null);
   const [snippetActionMenu, setSnippetActionMenu] = useState<{
     selection: Exclude<LineSelection, null>;
     left: number;
     top: number;
   } | null>(null);
   commentSelectionRef.current = commentSelection;
+  snippetQuestionRef.current = snippetQuestion;
   const editorModel = useMemo(() => buildDiffEditorModel(rows), [rows]);
   const commentGroups = useMemo(
     () => commentGroupsByPosition(discussions, draftComments, rows),
@@ -1864,7 +1975,7 @@ function DiffCodeEditor({
     240,
     editorModel.lines.length * codeEditorLineHeight +
       commentZoneHeight +
-      (commentSelection ? inlineCommentComposerHeight : 0) +
+      (commentSelection || snippetQuestion ? inlineCommentComposerHeight : 0) +
       16,
   );
 
@@ -1897,9 +2008,10 @@ function DiffCodeEditor({
   }, [onReplyToDiscussion]);
 
   useLayoutEffect(() => {
-    updateCommentSelectionRef.current(commentSelection);
-    updateInlineComposerRef.current(commentSelection);
-  }, [commentSelection]);
+    const activeSelection = snippetQuestion?.selection ?? commentSelection;
+    updateCommentSelectionRef.current(activeSelection);
+    updateInlineComposerRef.current(activeSelection);
+  }, [commentSelection, snippetQuestion]);
 
   useLayoutEffect(() => {
     const selection = snippetActionMenu?.selection ?? null;
@@ -1926,11 +2038,12 @@ function DiffCodeEditor({
 
       const action = snippetActionForKey(event);
       if (!action) return;
-      if (action === "explain" && !onExplainSnippetRef.current) return;
+      if (action !== "comment" && !onExplainSnippetRef.current) return;
 
       event.preventDefault();
       event.stopPropagation();
       if (action === "comment") {
+        setSnippetQuestion(null);
         onSelectCommentRangeRef.current(snippetActionMenu.selection);
       } else {
         const code = extractSnippetFromDiffRows(
@@ -1938,7 +2051,13 @@ function DiffCodeEditor({
           snippetActionMenu.selection.startLine,
           snippetActionMenu.selection.endLine,
         );
-        onExplainSnippetRef.current?.(snippetActionMenu.selection, code);
+        if (action === "ask") {
+          onCancelCommentRef.current();
+          setSnippetQuestion({ selection: snippetActionMenu.selection, code });
+        } else {
+          setSnippetQuestion(null);
+          onExplainSnippetRef.current?.(snippetActionMenu.selection, code);
+        }
       }
       setSnippetActionMenu(null);
     };
@@ -2045,15 +2164,32 @@ function DiffCodeEditor({
         const node = document.createElement("div");
         node.className = "diff-inline-composer-zone";
         composerRoot = createRoot(node);
+        const questionDraft = snippetQuestionRef.current;
         composerRoot.render(
-          <LineCommentComposer
-            selection={selection}
-            shortcuts={shortcuts}
-            onSave={(nextSelection, body) =>
-              onSaveCommentRef.current(nextSelection, body)
-            }
-            onCancel={() => onCancelCommentRef.current()}
-          />,
+          questionDraft ? (
+            <SnippetQuestionComposer
+              selection={questionDraft.selection}
+              shortcuts={shortcuts}
+              onAsk={(question) => {
+                onExplainSnippetRef.current?.(
+                  questionDraft.selection,
+                  questionDraft.code,
+                  question,
+                );
+                setSnippetQuestion(null);
+              }}
+              onCancel={() => setSnippetQuestion(null)}
+            />
+          ) : (
+            <LineCommentComposer
+              selection={selection}
+              shortcuts={shortcuts}
+              onSave={(nextSelection, body) =>
+                onSaveCommentRef.current(nextSelection, body)
+              }
+              onCancel={() => onCancelCommentRef.current()}
+            />
+          ),
         );
         editor.changeViewZones((accessor) => {
           composerZoneId = accessor.addZone({
@@ -2064,7 +2200,9 @@ function DiffCodeEditor({
         });
       };
       updateInlineComposerRef.current = setInlineComposerSelection;
-      setInlineComposerSelection(commentSelectionRef.current);
+      setInlineComposerSelection(
+        snippetQuestionRef.current?.selection ?? commentSelectionRef.current,
+      );
       let interactionSelectionKey = "";
       const setInteractionSelection = (selection: LineSelection) => {
         const nextKey = selection
@@ -2085,6 +2223,7 @@ function DiffCodeEditor({
         if (commentSelectionRef.current) {
           onCancelCommentRef.current();
         }
+        setSnippetQuestion(null);
         const editorRect = editorElement.getBoundingClientRect();
         const position = snippetActionMenuPosition(
           editorRect.width,
@@ -2413,6 +2552,7 @@ function DiffCodeEditor({
         <SnippetActionMenu
           {...snippetActionMenu}
           onComment={() => {
+            setSnippetQuestion(null);
             onSelectCommentRangeRef.current(snippetActionMenu.selection);
             setSnippetActionMenu(null);
           }}
@@ -2428,6 +2568,24 @@ function DiffCodeEditor({
                     snippetActionMenu.selection,
                     code,
                   );
+                  setSnippetQuestion(null);
+                  setSnippetActionMenu(null);
+                }
+              : undefined
+          }
+          onAsk={
+            onExplainSnippet
+              ? () => {
+                  const code = extractSnippetFromDiffRows(
+                    editorModel.rows,
+                    snippetActionMenu.selection.startLine,
+                    snippetActionMenu.selection.endLine,
+                  );
+                  onCancelCommentRef.current();
+                  setSnippetQuestion({
+                    selection: snippetActionMenu.selection,
+                    code,
+                  });
                   setSnippetActionMenu(null);
                 }
               : undefined
@@ -2579,7 +2737,7 @@ function SymbolContextPanel({
                 <div className="context-title explanation-title">
                   <strong>
                     <Sparkles size={15} aria-hidden="true" />
-                    Explain snippet
+                    {snippetExplanationTitle(entry.request.question)}
                   </strong>
                   <span>
                     {entry.request.file} · lines {entry.request.startLine}-
@@ -2596,10 +2754,18 @@ function SymbolContextPanel({
                   <X size={14} aria-hidden="true" />
                 </button>
               </div>
+              {entry.request.question ? (
+                <div className="snippet-question">
+                  <span>Reviewer question</span>
+                  <p>{entry.request.question}</p>
+                </div>
+              ) : null}
               {entry.status === "loading" ? (
                 <div className="explanation-loading" role="status">
                   <Loader2 className="spin" size={16} aria-hidden="true" />
-                  Asking Codex about this snippet…
+                  {entry.request.question
+                    ? "Codex is investigating your question…"
+                    : "Asking Codex about this snippet…"}
                 </div>
               ) : null}
               {entry.status === "error" ? (
@@ -2865,7 +3031,7 @@ export function snippetActionMenuPosition(
 ): { left: number; top: number } {
   const inset = 8;
   const menuWidth = 210;
-  const menuHeight = 96;
+  const menuHeight = 128;
   return {
     left: clamp(pointerX, inset, Math.max(inset, editorWidth - menuWidth - inset)),
     top: clamp(pointerY, inset, Math.max(inset, editorHeight - menuHeight - inset)),
@@ -2878,13 +3044,18 @@ export function snippetActionForKey(event: {
   ctrlKey?: boolean;
   metaKey?: boolean;
   shiftKey?: boolean;
-}): "comment" | "explain" | null {
+}): "comment" | "explain" | "ask" | null {
   if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
     return null;
   }
   if (event.key.toLowerCase() === "c") return "comment";
   if (event.key.toLowerCase() === "e") return "explain";
+  if (event.key.toLowerCase() === "a") return "ask";
   return null;
+}
+
+export function snippetExplanationTitle(question?: string): string {
+  return question ? "Ask about snippet" : "Explain snippet";
 }
 
 export function isDiffViewZoneInteractionTarget(

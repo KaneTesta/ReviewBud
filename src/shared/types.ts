@@ -161,6 +161,7 @@ export interface SnippetExplanationRequest extends PullRequestRef {
   startLine: number;
   endLine: number;
   code: string;
+  question?: string;
   headRepoFullName: string;
   headSha: string;
 }

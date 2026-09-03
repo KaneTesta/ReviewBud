@@ -13,6 +13,7 @@ import {
   scrollDiffPaneWithArrowKey,
   snippetActionForKey,
   snippetActionMenuPosition,
+  snippetExplanationTitle,
   stopDiffViewZoneEventPropagation,
 } from "../src/renderer/src/App";
 import type { DiffRow, DraftReviewComment, PullRequestDiscussion } from "../src/shared/types";
@@ -44,7 +45,7 @@ describe("comment interactions", () => {
   it("clamps the snippet action menu inside the editor", () => {
     assert.deepEqual(snippetActionMenuPosition(500, 300, 490, 295), {
       left: 282,
-      top: 196,
+      top: 164,
     });
     assert.deepEqual(snippetActionMenuPosition(500, 300, -20, -10), {
       left: 8,
@@ -52,17 +53,20 @@ describe("comment interactions", () => {
     });
   });
 
-  it("routes unmodified C and E keys to the open snippet menu actions", () => {
+  it("routes unmodified C, E, and A keys to the open snippet menu actions", () => {
     assert.equal(snippetActionForKey({ key: "c" }), "comment");
     assert.equal(snippetActionForKey({ key: "C" }), "comment");
     assert.equal(snippetActionForKey({ key: "e" }), "explain");
     assert.equal(snippetActionForKey({ key: "E" }), "explain");
+    assert.equal(snippetActionForKey({ key: "a" }), "ask");
+    assert.equal(snippetActionForKey({ key: "A" }), "ask");
   });
 
   it("ignores modified keys and unrelated snippet menu keys", () => {
     assert.equal(snippetActionForKey({ key: "c", metaKey: true }), null);
     assert.equal(snippetActionForKey({ key: "e", ctrlKey: true }), null);
     assert.equal(snippetActionForKey({ key: "e", altKey: true }), null);
+    assert.equal(snippetActionForKey({ key: "a", shiftKey: true }), null);
     assert.equal(snippetActionForKey({ key: "x" }), null);
   });
 
@@ -114,6 +118,14 @@ describe("comment interactions", () => {
     assert.equal(
       interactionSelectionAfterPointerExit(menuSelection, 12),
       undefined,
+    );
+  });
+
+  it("labels specific snippet questions separately from general explanations", () => {
+    assert.equal(snippetExplanationTitle(undefined), "Explain snippet");
+    assert.equal(
+      snippetExplanationTitle("Why is this fallback needed?"),
+      "Ask about snippet",
     );
   });
 
