@@ -3,11 +3,26 @@ import path from "node:path";
 import type {
   CachedPullRequest,
   DraftReviewComment,
+  PullRequestFile,
   RepositorySummary,
   DraftReviewSubmission,
   ReviewNote,
   ReviewWorkspace,
 } from "../shared/types.js";
+
+type StoredPullRequest = Omit<CachedPullRequest, "files"> & {
+  files: Array<Omit<PullRequestFile, "viewed">>;
+};
+
+type StoredReviewWorkspace = Omit<ReviewWorkspace, "pullRequest"> & {
+  pullRequest: StoredPullRequest;
+};
+
+type WorkspaceForStorage = Omit<ReviewWorkspace, "pullRequest"> & {
+  pullRequest: Omit<CachedPullRequest, "files"> & {
+    files: Array<Omit<PullRequestFile, "viewed"> & { viewed?: boolean }>;
+  };
+};
 
 export class ReviewStorage {
   private readonly cacheDir: string;
@@ -30,7 +45,7 @@ export class ReviewStorage {
       draftReview: existing?.draftReview ?? null,
     };
 
-    await writeFile(this.workspacePath(id), JSON.stringify(workspace, null, 2), "utf8");
+    await writeFile(this.workspacePath(id), serializeWorkspace(workspace), "utf8");
     return workspace;
   }
 
@@ -45,25 +60,24 @@ export class ReviewStorage {
       draftReview: null,
     };
 
-    await writeFile(this.workspacePath(id), JSON.stringify(workspace, null, 2), "utf8");
+    await writeFile(this.workspacePath(id), serializeWorkspace(workspace), "utf8");
     return workspace;
   }
 
-  async clearSubmittedReview(id: string): Promise<ReviewWorkspace> {
+  async clearSubmittedReview(id: string): Promise<void> {
     const workspace = await this.loadWorkspace(id);
-    const nextWorkspace: ReviewWorkspace = {
+    const nextWorkspace: StoredReviewWorkspace = {
       ...workspace,
       draftComments: [],
       draftReview: null,
     };
 
     await writeFile(this.workspacePath(id), JSON.stringify(nextWorkspace, null, 2), "utf8");
-    return nextWorkspace;
   }
 
-  async loadWorkspace(id: string): Promise<ReviewWorkspace> {
+  async loadWorkspace(id: string): Promise<StoredReviewWorkspace> {
     const raw = await readFile(this.workspacePath(id), "utf8");
-    return normalizeWorkspace(JSON.parse(raw) as ReviewWorkspace);
+    return normalizeWorkspace(JSON.parse(raw) as WorkspaceForStorage);
   }
 
   async saveReviewState(
@@ -73,9 +87,9 @@ export class ReviewStorage {
       draftComments: DraftReviewComment[];
       draftReview: DraftReviewSubmission | null;
     },
-  ): Promise<ReviewWorkspace> {
+  ): Promise<void> {
     const workspace = await this.loadWorkspace(id);
-    const nextWorkspace: ReviewWorkspace = {
+    const nextWorkspace: StoredReviewWorkspace = {
       ...workspace,
       notes: normalizeNotes(state.notes),
       draftComments: state.draftComments,
@@ -83,7 +97,6 @@ export class ReviewStorage {
     };
 
     await writeFile(this.workspacePath(id), JSON.stringify(nextWorkspace, null, 2), "utf8");
-    return nextWorkspace;
   }
 
   async applyRepositoryStars(repositories: RepositorySummary[]): Promise<RepositorySummary[]> {
@@ -112,7 +125,7 @@ export class ReviewStorage {
     return nextStarredRepositories;
   }
 
-  private async loadExistingWorkspace(id: string): Promise<ReviewWorkspace | null> {
+  private async loadExistingWorkspace(id: string): Promise<StoredReviewWorkspace | null> {
     try {
       return await this.loadWorkspace(id);
     } catch {
@@ -152,13 +165,21 @@ function mergeNotes(existing: ReviewNote[], filenames: string[]): ReviewNote[] {
   }));
 }
 
-function normalizeWorkspace(workspace: ReviewWorkspace): ReviewWorkspace {
+function normalizeWorkspace(workspace: WorkspaceForStorage): StoredReviewWorkspace {
   return {
     ...workspace,
+    pullRequest: {
+      ...workspace.pullRequest,
+      files: workspace.pullRequest.files.map(({ viewed: _viewed, ...file }) => file),
+    },
     notes: normalizeNotes(workspace.notes),
     draftComments: workspace.draftComments ?? [],
     draftReview: workspace.draftReview ?? null,
   };
+}
+
+function serializeWorkspace(workspace: WorkspaceForStorage): string {
+  return JSON.stringify(normalizeWorkspace(workspace), null, 2);
 }
 
 function normalizeNotes(notes: unknown): ReviewNote[] {

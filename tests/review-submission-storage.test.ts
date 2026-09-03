@@ -47,6 +47,39 @@ const pullRequest: CachedPullRequest = {
 };
 
 describe("review submission storage", () => {
+  it("never persists GitHub file viewed state in the local workspace", async () => {
+    const userDataPath = await mkdtemp(path.join(tmpdir(), "review-bud-viewed-"));
+    try {
+      const storage = new ReviewStorage(userDataPath);
+      const workspace = await storage.savePullRequest({
+        ...pullRequest,
+        files: [{ ...pullRequest.files[0]!, viewed: true }],
+      });
+      const workspacePath = path.join(
+        userDataPath,
+        "pull-requests",
+        "octo-app-42.json",
+      );
+
+      const cachedAfterLoad = JSON.parse(await readFile(workspacePath, "utf8")) as {
+        pullRequest: { files: Array<Record<string, unknown>> };
+      };
+      assert.equal("viewed" in cachedAfterLoad.pullRequest.files[0]!, false);
+
+      await storage.saveReviewState(workspace.pullRequest.summary.id, {
+        notes: workspace.notes,
+        draftComments: [],
+        draftReview: null,
+      });
+      const cachedAfterReviewSave = JSON.parse(await readFile(workspacePath, "utf8")) as {
+        pullRequest: { files: Array<Record<string, unknown>> };
+      };
+      assert.equal("viewed" in cachedAfterReviewSave.pullRequest.files[0]!, false);
+    } finally {
+      await rm(userDataPath, { recursive: true, force: true });
+    }
+  });
+
   it("strips legacy viewed statuses from cached review notes", async () => {
     const userDataPath = await mkdtemp(path.join(tmpdir(), "review-bud-migrate-"));
     try {
@@ -70,6 +103,7 @@ describe("review submission storage", () => {
       assert.deepEqual(normalized.notes, [
         { file: "src/app.ts", note: "Checked" },
       ]);
+      assert.equal("viewed" in normalized.pullRequest.files[0]!, false);
 
       await storage.saveReviewState("octo-app-42", {
         notes: normalized.notes,
@@ -111,7 +145,8 @@ describe("review submission storage", () => {
         },
       });
 
-      const cleared = await storage.clearSubmittedReview(workspace.pullRequest.summary.id);
+      await storage.clearSubmittedReview(workspace.pullRequest.summary.id);
+      const cleared = await storage.loadWorkspace(workspace.pullRequest.summary.id);
       assert.deepEqual(cleared.notes, [
         { file: "src/app.ts", note: "Checked" },
       ]);

@@ -41,11 +41,13 @@ Extend the existing local viewed toggle into a complete renderer-to-GitHub flow.
 - [x] Task 4: Fetch and normalize every changed file's GitHub viewed state.
 - [x] Task 5: Remove viewed status from local notes and migrate legacy cached workspaces.
 - [x] Task 6: Drive renderer progress and toggles exclusively from the GitHub-backed file model.
+- [x] Task 7: Remove file viewed values from local workspace serialization and legacy caches.
 
 ### Checkpoint: GitHub-only state
 
 - [x] Paginated GitHub viewed states cover every changed file.
 - [x] Local workspace JSON no longer contains note status fields.
+- [x] Local workspace JSON no longer contains file viewed fields.
 - [x] Reloading a PR replaces in-memory viewed state with GitHub's current state.
 - [x] Unit tests, typecheck, production build, and code review pass.
 

@@ -139,3 +139,15 @@
 - [x] All revised specification success criteria are met.
 - [x] No real pull request was mutated during verification.
 - [x] Code review reports no blocking findings.
+
+## Task 7: Remove viewed values from workspace serialization
+
+**Description:** Keep `PullRequestFile.viewed` in memory only, omit it from every local workspace write, and strip it from legacy cached files when read.
+
+**Acceptance criteria:**
+- [x] New PR cache files omit `PullRequestFile.viewed`.
+- [x] Later review-state saves continue to omit viewed values.
+- [x] Legacy cached file values are stripped and never returned as GitHub-authoritative state.
+
+**Verification:**
+- [x] Focused tests pass: `node --import tsx --test tests/review-submission-storage.test.ts`

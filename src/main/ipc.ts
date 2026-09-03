@@ -89,12 +89,12 @@ export function registerIpcHandlers(): void {
     const workspaceId = pullRequestId(request);
     await storage.loadWorkspace(workspaceId);
     await submitPullRequestReview(request);
-    const clearedWorkspace = await storage.clearSubmittedReview(workspaceId);
+    await storage.clearSubmittedReview(workspaceId);
 
     try {
       return await storage.saveSubmittedPullRequest(await fetchPullRequest(request));
     } catch {
-      return clearedWorkspace;
+      return null;
     }
   });
 }

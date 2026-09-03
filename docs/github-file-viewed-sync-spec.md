@@ -2,7 +2,7 @@
 
 ## Objective
 
-Make GitHub the only source of truth for per-file viewed state. ReviewBud fetches each changed file's `viewerViewedState` when loading a pull request, displays and calculates progress from that state, and writes toggle changes back to GitHub. ReviewBud must not persist viewed/unviewed state in local review notes, and legacy cached note statuses must be removed when a workspace is normalized or saved.
+Make GitHub the only source of truth for per-file viewed state. ReviewBud fetches each changed file's `viewerViewedState` when loading a pull request, displays and calculates progress from that state, and writes toggle changes back to GitHub. ReviewBud must not persist viewed/unviewed state anywhere in local workspace storage. Legacy cached note statuses and cached file `viewed` fields must be removed when a workspace is normalized or saved.
 
 ## Tech Stack
 
@@ -46,7 +46,7 @@ Use existing camelCase TypeScript names, explicit request interfaces, async func
 
 - Unit-test normalization of paginated `viewerViewedState` results, including `VIEWED`, `UNVIEWED`, and `DISMISSED`.
 - Unit-test that REST file payloads are merged with GitHub viewed states by exact path.
-- Unit-test that local workspace normalization strips legacy note `status` fields and never writes them back.
+- Unit-test that local workspace normalization strips legacy note `status` and file `viewed` fields and never writes them back.
 - Unit-test that viewed and unviewed intents select the correct GitHub GraphQL mutation and variables.
 - Interaction-test that the renderer updates the in-memory file model only after GitHub succeeds and retains it on failure.
 - Verify repeated activation is disabled while the current file mutation is in flight.
@@ -55,7 +55,7 @@ Use existing camelCase TypeScript names, explicit request interfaces, async func
 
 ## Boundaries
 
-- Always: route GitHub access through the Electron main process, fetch all viewed-state pages, treat only `VIEWED` as viewed, support mark and unmark, strip legacy local status data, and report failures.
+- Always: route GitHub access through the Electron main process, fetch all viewed-state pages, treat only `VIEWED` as viewed, support mark and unmark, strip all viewed state from local workspace JSON, and report failures.
 - Ask first: add dependencies, change GitHub authentication, delete entire cached workspaces, or run a mutation against a real pull request.
 - Never: expose credentials to the renderer, derive viewed progress from local notes, persist viewed status locally, silently swallow GitHub failures, or treat `DISMISSED` as viewed.
 
@@ -63,8 +63,8 @@ Use existing camelCase TypeScript names, explicit request interfaces, async func
 
 - Loading a pull request fetches every changed file's `viewerViewedState` from GitHub with pagination.
 - Each `PullRequestFile` carries a boolean viewed value derived from GitHub; `VIEWED` maps to true while `UNVIEWED` and `DISMISSED` map to false.
-- `ReviewNote` contains only locally owned note data; viewed status is neither read from nor written to local workspace storage.
-- Existing cached note statuses are stripped during workspace normalization and subsequent saves.
+- `ReviewNote` contains only locally owned note data; neither note status nor `PullRequestFile.viewed` is written to local workspace storage.
+- Existing cached note statuses and file `viewed` fields are stripped during workspace normalization and subsequent saves.
 - Activating **Mark viewed** invokes GitHub's `markFileAsViewed` mutation for the active pull request and exact file path.
 - Activating **Viewed** invokes GitHub's `unmarkFileAsViewed` mutation for the same pull request and path.
 - GitHub receives the pull request GraphQL node ID retained from the pull request REST response.

@@ -549,7 +549,20 @@ export function App() {
         body,
         comments: workspace.draftComments ?? [],
       });
-      replaceWorkspace(nextWorkspace);
+      if (nextWorkspace) {
+        replaceWorkspace(nextWorkspace);
+      } else {
+        const latestWorkspace = workspaceRef.current;
+        if (latestWorkspace?.pullRequest.summary.id === summary.id) {
+          replaceWorkspace(
+            withReviewState(latestWorkspace, {
+              draftComments: [],
+              draftReview: null,
+            }),
+          );
+        }
+        setError("Review published, but GitHub could not refresh the pull request. Reload it to refresh viewed state.");
+      }
       setFinishReviewOpen(false);
     } catch (submitError) {
       setFinishReviewError(

@@ -33,12 +33,12 @@ export interface PrToolApi {
       draftComments: DraftReviewComment[];
       draftReview: DraftReviewSubmission | null;
     },
-  ) => Promise<ReviewWorkspace>;
+  ) => Promise<void>;
   loadSymbolContext: (request: SymbolContextRequest) => Promise<SymbolContext>;
   loadFileSource: (request: SymbolContextRequest) => Promise<string>;
   explainSnippet: (request: SnippetExplanationRequest) => Promise<SnippetExplanation>;
   replyToDiscussion: (request: PullRequestDiscussionReplyRequest) => Promise<ReviewWorkspace>;
-  submitReview: (request: PullRequestReviewSubmissionRequest) => Promise<ReviewWorkspace>;
+  submitReview: (request: PullRequestReviewSubmissionRequest) => Promise<ReviewWorkspace | null>;
 }
 
 const api: PrToolApi = {
@@ -60,12 +60,12 @@ const api: PrToolApi = {
       ipcRenderer.removeListener("pr:reviewLink", listener);
     };
   },
-  saveReviewState: (id, state) => ipcRenderer.invoke("pr:saveReviewState", id, state) as Promise<ReviewWorkspace>,
+  saveReviewState: (id, state) => ipcRenderer.invoke("pr:saveReviewState", id, state) as Promise<void>,
   loadSymbolContext: (request) => ipcRenderer.invoke("pr:symbolContext", request) as Promise<SymbolContext>,
   loadFileSource: (request) => ipcRenderer.invoke("pr:fileSource", request) as Promise<string>,
   explainSnippet: (request) => ipcRenderer.invoke("pr:explainSnippet", request) as Promise<SnippetExplanation>,
   replyToDiscussion: (request) => ipcRenderer.invoke("pr:replyDiscussion", request) as Promise<ReviewWorkspace>,
-  submitReview: (request) => ipcRenderer.invoke("pr:submitReview", request) as Promise<ReviewWorkspace>,
+  submitReview: (request) => ipcRenderer.invoke("pr:submitReview", request) as Promise<ReviewWorkspace | null>,
 };
 
 contextBridge.exposeInMainWorld("prTool", api);
