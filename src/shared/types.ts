@@ -27,6 +27,7 @@ export interface PullRequestSummary extends PullRequestRef {
 
 export interface PullRequestFile {
   filename: string;
+  viewed: boolean;
   status: string;
   additions: number;
   deletions: number;
@@ -64,7 +65,6 @@ export interface PullRequestFileViewedRequest {
 
 export interface ReviewNote {
   file: string;
-  status: "unread" | "reviewing" | "done" | "question";
   note: string;
 }
 

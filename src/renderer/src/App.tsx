@@ -59,8 +59,8 @@ import {
   adjacentFile,
   completedAllFiles,
   reviewProgress,
+  setFileViewed,
   syncFileViewed,
-  toggleFileViewed,
   upsertDraftComment,
   withReviewState,
 } from "../../shared/review-state";
@@ -239,11 +239,9 @@ export function App() {
       null
     );
   }, [selectedFile, workspace]);
-  const currentFileViewed =
-    workspace?.notes.find((note) => note.file === currentFile?.filename)
-      ?.status === "done";
+  const currentFileViewed = currentFile?.viewed ?? false;
   const progress = useMemo(
-    () => (workspace ? reviewProgress(workspace.notes) : null),
+    () => (workspace ? reviewProgress(workspace.pullRequest.files) : null),
     [workspace],
   );
 
@@ -493,19 +491,21 @@ export function App() {
     setError(null);
 
     try {
-      await syncFileViewed(
-        workspace.notes,
+      const viewed = await syncFileViewed(
+        workspace.pullRequest.files,
         workspace.pullRequest.summary.nodeId,
         file,
         window.prTool.setFileViewed,
       );
       const latestWorkspace = workspaceRef.current;
       if (latestWorkspace?.pullRequest.summary.id !== workspaceId) return;
-      persistWorkspace(
-        withReviewState(latestWorkspace, {
-          notes: toggleFileViewed(latestWorkspace.notes, file),
-        }),
-      );
+      replaceWorkspace({
+        ...latestWorkspace,
+        pullRequest: {
+          ...latestWorkspace.pullRequest,
+          files: setFileViewed(latestWorkspace.pullRequest.files, file, viewed),
+        },
+      });
     } catch (viewedError) {
       setError(
         viewedError instanceof Error ? viewedError.message : String(viewedError),
@@ -1106,11 +1106,8 @@ function ReviewActionPane({
   onFinishReview: () => void;
 }) {
   const paneRef = useRef<HTMLElement | null>(null);
-  const progress = reviewProgress(workspace.notes);
-  const currentNote = workspace.notes.find(
-    (note) => note.file === currentFile.filename,
-  );
-  const currentFileViewed = currentNote?.status === "done";
+  const progress = reviewProgress(workspace.pullRequest.files);
+  const currentFileViewed = currentFile.viewed;
   const draftComments = workspace.draftComments ?? [];
 
   useEffect(() => {
@@ -1143,7 +1140,7 @@ function ReviewActionPane({
     >
       <div className="review-action-status">
         <span>
-          {currentNote?.status === "done"
+          {currentFileViewed
             ? "Viewed"
             : `${progress.viewed}/${progress.total} files viewed`}
         </span>

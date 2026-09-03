@@ -67,3 +67,75 @@
 - [x] All specification success criteria are met.
 - [x] No real pull request was mutated during verification.
 - [x] Code review reports no blocking findings.
+
+## Task 4: Import viewed state from GitHub
+
+**Description:** Fetch all paginated `PullRequestChangedFile.viewerViewedState` values and merge them into REST file details by exact path.
+
+**Acceptance criteria:**
+- [x] `VIEWED` maps to `PullRequestFile.viewed === true`.
+- [x] `UNVIEWED`, `DISMISSED`, and missing matches map to false.
+- [x] GraphQL pagination retrieves more than 100 changed files.
+
+**Verification:**
+- [x] Focused tests pass: `node --import tsx --test tests/github-file-viewed.test.ts`
+
+**Dependencies:** Task 1
+
+**Files likely touched:**
+- `src/shared/types.ts`
+- `src/main/github.ts`
+- `tests/github-file-viewed.test.ts`
+
+**Estimated scope:** Medium (3 files)
+
+## Task 5: Remove locally persisted viewed status
+
+**Description:** Reduce local review notes to note text, strip legacy statuses when loading/saving, and calculate progress from GitHub-backed files.
+
+**Acceptance criteria:**
+- [x] `ReviewNote` has no status field.
+- [x] Legacy cached status fields are absent from normalized and newly saved workspaces.
+- [x] Review progress counts `PullRequestFile.viewed` values.
+
+**Verification:**
+- [x] Focused tests pass: `node --import tsx --test tests/review-state.test.ts tests/review-submission-storage.test.ts`
+
+**Dependencies:** Task 4
+
+**Files likely touched:**
+- `src/shared/types.ts`
+- `src/shared/review-state.ts`
+- `src/main/storage.ts`
+- `tests/review-state.test.ts`
+- `tests/review-submission-storage.test.ts`
+
+**Estimated scope:** Medium (5 files)
+
+## Task 6: Use GitHub-backed viewed state in the renderer
+
+**Description:** Read current/progress state from pull request files and update only the in-memory file after a successful GitHub mutation.
+
+**Acceptance criteria:**
+- [x] Button, diff badge, progress count, and completion flow use `PullRequestFile.viewed`.
+- [x] Successful toggles do not persist a note status.
+- [x] Failed toggles retain the prior file state and show an error.
+
+**Verification:**
+- [x] Full tests pass: `npm test`
+- [x] Typecheck passes: `npm run typecheck`
+- [x] Build succeeds: `npm run build`
+
+**Dependencies:** Tasks 4 and 5
+
+**Files likely touched:**
+- `src/renderer/src/App.tsx`
+- `tests/review-state.test.ts`
+
+**Estimated scope:** Small (2 files)
+
+## GitHub-only State Checkpoint
+
+- [x] All revised specification success criteria are met.
+- [x] No real pull request was mutated during verification.
+- [x] Code review reports no blocking findings.

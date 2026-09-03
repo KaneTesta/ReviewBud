@@ -22,23 +22,25 @@ export function adjacentFile(
   return files[nextIndex]?.filename ?? null;
 }
 
-export function toggleFileViewed(notes: ReviewNote[], file: string): ReviewNote[] {
-  return notes.map((note) =>
-    note.file === file
-      ? { ...note, status: note.status === "done" ? "unread" : "done" }
-      : note,
+export function setFileViewed(
+  files: PullRequestFile[],
+  filename: string,
+  viewed: boolean,
+): PullRequestFile[] {
+  return files.map((file) =>
+    file.filename === filename ? { ...file, viewed } : file,
   );
 }
 
 export async function syncFileViewed(
-  notes: ReviewNote[],
+  files: PullRequestFile[],
   pullRequestId: string,
-  file: string,
-  setFileViewed: (request: PullRequestFileViewedRequest) => Promise<void>,
-): Promise<ReviewNote[]> {
-  const viewed = notes.find((note) => note.file === file)?.status !== "done";
-  await setFileViewed({ pullRequestId, path: file, viewed });
-  return toggleFileViewed(notes, file);
+  filename: string,
+  updateFileViewed: (request: PullRequestFileViewedRequest) => Promise<void>,
+): Promise<boolean> {
+  const viewed = !(files.find((file) => file.filename === filename)?.viewed ?? false);
+  await updateFileViewed({ pullRequestId, path: filename, viewed });
+  return viewed;
 }
 
 export function upsertDraftComment(
@@ -82,10 +84,10 @@ export function createDraftReview(
   };
 }
 
-export function reviewProgress(notes: ReviewNote[]): { viewed: number; total: number } {
+export function reviewProgress(files: PullRequestFile[]): { viewed: number; total: number } {
   return {
-    viewed: notes.filter((note) => note.status === "done").length,
-    total: notes.length,
+    viewed: files.filter((file) => file.viewed).length,
+    total: files.length,
   };
 }
 

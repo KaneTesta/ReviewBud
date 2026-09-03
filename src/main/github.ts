@@ -94,13 +94,29 @@ interface ReviewThreadMetadata {
   startSide?: "LEFT" | "RIGHT";
 }
 
-interface GitHubFileResponse {
+export interface GitHubFileResponse {
   filename: string;
   status: string;
   additions: number;
   deletions: number;
   changes: number;
   patch?: string;
+}
+
+export interface GraphQLFileViewedStatesResponse {
+  errors?: Array<{ message?: string }>;
+  data?: {
+    repository?: {
+      pullRequest?: {
+        files?: {
+          nodes?: Array<{
+            path: string;
+            viewerViewedState: "VIEWED" | "UNVIEWED" | "DISMISSED";
+          } | null> | null;
+        };
+      };
+    };
+  };
 }
 
 interface GitHubReviewResponse {
@@ -235,7 +251,7 @@ function formatGhError(error: unknown, stderrFallback = ""): string {
 
 export async function fetchPullRequest(ref: PullRequestRef): Promise<CachedPullRequest> {
   const path = `repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`;
-  const [pr, files, reviews, comments, diff, reviewDecision, reviewThreadMetadata] = await Promise.all([
+  const [pr, files, reviews, comments, diff, reviewDecision, reviewThreadMetadata, fileViewedStates] = await Promise.all([
     ghJson<GitHubPullResponse>([path]),
     ghJson<GitHubFileResponse[]>([`${path}/files`, "--paginate"]),
     ghJson<GitHubReviewResponse[]>([`${path}/reviews`, "--paginate"]),
@@ -243,11 +259,12 @@ export async function fetchPullRequest(ref: PullRequestRef): Promise<CachedPullR
     ghText([path, "-H", "Accept: application/vnd.github.v3.diff"]),
     fetchReviewDecision(ref),
     fetchReviewThreadMetadata(ref),
+    fetchFileViewedStates(ref),
   ]);
 
   return {
     summary: normalizeSummary(ref, pr, reviewDecision),
-    files: files.map(normalizeFile),
+    files: normalizePullRequestFiles(files, fileViewedStates),
     discussions: [
       ...reviews.filter((review) => review.body?.trim()).map(normalizeReview),
       ...comments.map((comment) => normalizeComment(comment, reviewThreadMetadata.get(comment.id))),
@@ -615,6 +632,43 @@ async function fetchReviewThreadMetadata(
   }
 }
 
+async function fetchFileViewedStates(
+  ref: PullRequestRef,
+): Promise<GraphQLFileViewedStatesResponse[]> {
+  const query = `
+    query($owner: String!, $repo: String!, $number: Int!, $endCursor: String) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $number) {
+          files(first: 100, after: $endCursor) {
+            nodes {
+              path
+              viewerViewedState
+            }
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  return ghJson<GraphQLFileViewedStatesResponse[]>([
+    "graphql",
+    "--paginate",
+    "--slurp",
+    "-f",
+    `query=${query}`,
+    "-f",
+    `owner=${ref.owner}`,
+    "-f",
+    `repo=${ref.repo}`,
+    "-F",
+    `number=${ref.number}`,
+  ]);
+}
+
 export function reviewThreadMetadataByCommentId(
   response: GraphQLReviewThreadsResponse,
 ): Map<number, ReviewThreadMetadata> {
@@ -671,15 +725,37 @@ function encodeContentPath(filePath: string): string {
   return filePath.split("/").map(encodeURIComponent).join("/");
 }
 
-function normalizeFile(file: GitHubFileResponse): PullRequestFile {
-  return {
+export function normalizePullRequestFiles(
+  files: GitHubFileResponse[],
+  fileViewedStatePages: GraphQLFileViewedStatesResponse[],
+): PullRequestFile[] {
+  const errors = fileViewedStatePages.flatMap((page) => page.errors ?? []);
+  if (errors.length) {
+    const message = errors
+      .map((error) => error.message)
+      .filter(Boolean)
+      .join("; ");
+    throw new Error(message || "GitHub could not load file viewed states.");
+  }
+
+  const viewedPaths = new Set(
+    fileViewedStatePages.flatMap((page) =>
+      (page.data?.repository?.pullRequest?.files?.nodes ?? [])
+        .filter((file) => file?.viewerViewedState === "VIEWED")
+        .map((file) => file?.path)
+        .filter((path): path is string => Boolean(path)),
+    ),
+  );
+
+  return files.map((file) => ({
     filename: file.filename,
+    viewed: viewedPaths.has(file.filename),
     status: file.status,
     additions: file.additions,
     deletions: file.deletions,
     changes: file.changes,
     patch: file.patch ?? "",
-  };
+  }));
 }
 
 function normalizeReview(review: GitHubReviewResponse): PullRequestDiscussion {

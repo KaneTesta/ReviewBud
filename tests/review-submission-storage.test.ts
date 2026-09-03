@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -33,6 +33,7 @@ const pullRequest: CachedPullRequest = {
   files: [
     {
       filename: "src/app.ts",
+      viewed: false,
       status: "modified",
       additions: 2,
       deletions: 1,
@@ -46,13 +47,53 @@ const pullRequest: CachedPullRequest = {
 };
 
 describe("review submission storage", () => {
+  it("strips legacy viewed statuses from cached review notes", async () => {
+    const userDataPath = await mkdtemp(path.join(tmpdir(), "review-bud-migrate-"));
+    try {
+      const storage = new ReviewStorage(userDataPath);
+      const workspace = await storage.savePullRequest(pullRequest);
+      const workspacePath = path.join(
+        userDataPath,
+        "pull-requests",
+        "octo-app-42.json",
+      );
+      await writeFile(
+        workspacePath,
+        JSON.stringify({
+          ...workspace,
+          notes: [{ file: "src/app.ts", status: "done", note: "Checked" }],
+        }),
+        "utf8",
+      );
+
+      const normalized = await storage.loadWorkspace("octo-app-42");
+      assert.deepEqual(normalized.notes, [
+        { file: "src/app.ts", note: "Checked" },
+      ]);
+
+      await storage.saveReviewState("octo-app-42", {
+        notes: normalized.notes,
+        draftComments: [],
+        draftReview: null,
+      });
+      const persisted = JSON.parse(await readFile(workspacePath, "utf8")) as {
+        notes: unknown[];
+      };
+      assert.deepEqual(persisted.notes, [
+        { file: "src/app.ts", note: "Checked" },
+      ]);
+    } finally {
+      await rm(userDataPath, { recursive: true, force: true });
+    }
+  });
+
   it("preserves notes and clears submitted drafts after a successful refresh", async () => {
     const userDataPath = await mkdtemp(path.join(tmpdir(), "review-bud-submit-"));
     try {
       const storage = new ReviewStorage(userDataPath);
       const workspace = await storage.savePullRequest(pullRequest);
       await storage.saveReviewState(workspace.pullRequest.summary.id, {
-        notes: [{ file: "src/app.ts", status: "done", note: "Checked" }],
+        notes: [{ file: "src/app.ts", note: "Checked" }],
         draftComments: [
           {
             id: "draft-1",
@@ -72,7 +113,7 @@ describe("review submission storage", () => {
 
       const cleared = await storage.clearSubmittedReview(workspace.pullRequest.summary.id);
       assert.deepEqual(cleared.notes, [
-        { file: "src/app.ts", status: "done", note: "Checked" },
+        { file: "src/app.ts", note: "Checked" },
       ]);
       assert.deepEqual(cleared.draftComments, []);
       assert.equal(cleared.draftReview, null);
@@ -83,7 +124,7 @@ describe("review submission storage", () => {
       });
 
       assert.deepEqual(refreshed.notes, [
-        { file: "src/app.ts", status: "done", note: "Checked" },
+        { file: "src/app.ts", note: "Checked" },
       ]);
       assert.deepEqual(refreshed.draftComments, []);
       assert.equal(refreshed.draftReview, null);

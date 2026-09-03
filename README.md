@@ -8,7 +8,7 @@ Paste a pull request URL, fetch the PR through the GitHub CLI, review metadata a
 
 -   Load GitHub pull requests by URL or by selecting from recent/searchable repositories. No extra access required other than your standard GitHub CLI access
 -   Review PR metadata, changed files, unified diffs, existing reviews, and inline discussions in a local desktop workspace.
--   Mark files as viewed, navigate changed files with keyboard shortcuts, and track review progress.
+-   Keep GitHub file-viewed state in sync, navigate changed files with keyboard shortcuts, and track review progress.
 -   Draft line comments and a final review outcome locally without writing to the target repository.
 -   Expand collapsed diff gaps and inspect source context without checking out PR branches in your active workspace.
 -   Cmd/Ctrl-click symbols in TypeScript, JavaScript, and Python diffs to open implementation context, with raw file context as a fallback.

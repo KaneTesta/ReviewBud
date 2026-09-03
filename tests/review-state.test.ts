@@ -5,16 +5,16 @@ import {
   completedAllFiles,
   createDraftReview,
   reviewProgress,
+  setFileViewed,
   syncFileViewed,
-  toggleFileViewed,
   upsertDraftComment,
 } from "../src/shared/review-state";
-import type { PullRequestFile, ReviewNote } from "../src/shared/types";
+import type { PullRequestFile } from "../src/shared/types";
 
 const files: PullRequestFile[] = [
-  { filename: "src/a.ts", status: "modified", additions: 1, deletions: 0, changes: 1, patch: "" },
-  { filename: "src/b.ts", status: "modified", additions: 2, deletions: 1, changes: 3, patch: "" },
-  { filename: "src/c.ts", status: "added", additions: 4, deletions: 0, changes: 4, patch: "" },
+  { filename: "src/a.ts", viewed: false, status: "modified", additions: 1, deletions: 0, changes: 1, patch: "" },
+  { filename: "src/b.ts", viewed: false, status: "modified", additions: 2, deletions: 1, changes: 3, patch: "" },
+  { filename: "src/c.ts", viewed: false, status: "added", additions: 4, deletions: 0, changes: 4, patch: "" },
 ];
 
 describe("adjacentFile", () => {
@@ -31,43 +31,28 @@ describe("adjacentFile", () => {
 });
 
 describe("review state helpers", () => {
-  it("toggles the active file viewed state without changing other notes", () => {
-    const notes: ReviewNote[] = [
-      { file: "src/a.ts", status: "unread", note: "" },
-      { file: "src/b.ts", status: "question", note: "Check this" },
-    ];
-
-    assert.deepEqual(toggleFileViewed(notes, "src/a.ts"), [
-      { file: "src/a.ts", status: "done", note: "" },
-      { file: "src/b.ts", status: "question", note: "Check this" },
-    ]);
-
-    assert.deepEqual(toggleFileViewed(notes, "src/b.ts"), [
-      { file: "src/a.ts", status: "unread", note: "" },
-      { file: "src/b.ts", status: "done", note: "Check this" },
-    ]);
+  it("reports viewed progress from GitHub-backed pull request files", () => {
+    assert.deepEqual(
+      reviewProgress([
+        { ...files[0]!, viewed: true },
+        { ...files[1]!, viewed: false },
+      ]),
+      { viewed: 1, total: 2 },
+    );
   });
 
-  it("reverts a viewed file to unread when toggled again", () => {
-    const notes: ReviewNote[] = [
-      { file: "src/a.ts", status: "done", note: "" },
-      { file: "src/b.ts", status: "unread", note: "" },
-    ];
+  it("applies a confirmed viewed value exactly after fresher state arrives", () => {
+    const refreshedFiles = files.map((file) => ({ ...file, viewed: true }));
 
-    assert.deepEqual(toggleFileViewed(notes, "src/a.ts"), [
-      { file: "src/a.ts", status: "unread", note: "" },
-      { file: "src/b.ts", status: "unread", note: "" },
-    ]);
+    assert.equal(setFileViewed(refreshedFiles, "src/a.ts", true)[0]?.viewed, true);
+    assert.equal(setFileViewed(refreshedFiles, "src/a.ts", false)[0]?.viewed, false);
   });
 
-  it("returns updated local notes only after GitHub confirms the viewed state", async () => {
-    const notes: ReviewNote[] = [
-      { file: "src/a.ts", status: "unread", note: "" },
-    ];
+  it("returns the requested value only after GitHub confirms the viewed state", async () => {
     let confirmRemote: (() => void) | undefined;
     let request: unknown;
-    const pendingNotes = syncFileViewed(
-      notes,
+    const pendingViewed = syncFileViewed(
+      files,
       "PR_kwDOExample",
       "src/a.ts",
       (nextRequest) => {
@@ -78,9 +63,7 @@ describe("review state helpers", () => {
       },
     );
 
-    assert.deepEqual(notes, [
-      { file: "src/a.ts", status: "unread", note: "" },
-    ]);
+    assert.equal(files[0]?.viewed, false);
     assert.deepEqual(request, {
       pullRequestId: "PR_kwDOExample",
       path: "src/a.ts",
@@ -88,25 +71,19 @@ describe("review state helpers", () => {
     });
 
     confirmRemote?.();
-    assert.deepEqual(await pendingNotes, [
-      { file: "src/a.ts", status: "done", note: "" },
-    ]);
+    assert.equal(await pendingViewed, true);
   });
 
-  it("retains local notes when GitHub rejects the viewed state", async () => {
-    const notes: ReviewNote[] = [
-      { file: "src/a.ts", status: "done", note: "Checked" },
-    ];
+  it("retains GitHub-backed files when GitHub rejects the viewed state", async () => {
+    const viewedFiles = files.map((file) => ({ ...file, viewed: true }));
 
     await assert.rejects(
-      syncFileViewed(notes, "PR_kwDOExample", "src/a.ts", async () => {
+      syncFileViewed(viewedFiles, "PR_kwDOExample", "src/a.ts", async () => {
         throw new Error("GitHub denied the update");
       }),
       /GitHub denied the update/,
     );
-    assert.deepEqual(notes, [
-      { file: "src/a.ts", status: "done", note: "Checked" },
-    ]);
+    assert.equal(viewedFiles[0]?.viewed, true);
   });
 
   it("normalizes draft comment line ranges and trims the body", () => {
@@ -152,8 +129,8 @@ describe("review state helpers", () => {
     });
     assert.deepEqual(
       reviewProgress([
-        { file: "src/a.ts", status: "done", note: "" },
-        { file: "src/b.ts", status: "unread", note: "" },
+        { ...files[0]!, viewed: true },
+        { ...files[1]!, viewed: false },
       ]),
       { viewed: 1, total: 2 },
     );

@@ -77,7 +77,7 @@ export class ReviewStorage {
     const workspace = await this.loadWorkspace(id);
     const nextWorkspace: ReviewWorkspace = {
       ...workspace,
-      notes: state.notes,
+      notes: normalizeNotes(state.notes),
       draftComments: state.draftComments,
       draftReview: state.draftReview,
     };
@@ -146,14 +146,27 @@ function sanitizeId(id: string): string {
 
 function mergeNotes(existing: ReviewNote[], filenames: string[]): ReviewNote[] {
   const byFile = new Map(existing.map((note) => [note.file, note]));
-  return filenames.map((filename) => byFile.get(filename) ?? { file: filename, status: "unread", note: "" });
+  return filenames.map((filename) => ({
+    file: filename,
+    note: byFile.get(filename)?.note ?? "",
+  }));
 }
 
 function normalizeWorkspace(workspace: ReviewWorkspace): ReviewWorkspace {
   return {
     ...workspace,
-    notes: workspace.notes ?? [],
+    notes: normalizeNotes(workspace.notes),
     draftComments: workspace.draftComments ?? [],
     draftReview: workspace.draftReview ?? null,
   };
+}
+
+function normalizeNotes(notes: unknown): ReviewNote[] {
+  if (!Array.isArray(notes)) return [];
+  return notes.flatMap((note) => {
+    if (!note || typeof note !== "object") return [];
+    const { file, note: text } = note as { file?: unknown; note?: unknown };
+    if (typeof file !== "string") return [];
+    return [{ file, note: typeof text === "string" ? text : "" }];
+  });
 }
