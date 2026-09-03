@@ -898,6 +898,7 @@ a:focus-visible {
 }
 
 .secondary-action:disabled,
+.shortcut-button:disabled,
 .outcome-button:disabled,
 .icon-button:disabled {
   cursor: not-allowed;

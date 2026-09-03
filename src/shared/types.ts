@@ -6,6 +6,7 @@ export interface PullRequestRef {
 
 export interface PullRequestSummary extends PullRequestRef {
   id: string;
+  nodeId: string;
   url: string;
   title: string;
   state: string;
@@ -53,6 +54,12 @@ export interface PullRequestDiscussion {
 export interface PullRequestDiscussionReplyRequest extends PullRequestRef {
   discussionId: string;
   body: string;
+}
+
+export interface PullRequestFileViewedRequest {
+  pullRequestId: string;
+  path: string;
+  viewed: boolean;
 }
 
 export interface ReviewNote {

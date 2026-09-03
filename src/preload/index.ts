@@ -5,6 +5,7 @@ import type {
   DraftReviewSubmission,
   PullRequestDiscussionReplyRequest,
   PullRequestListItem,
+  PullRequestFileViewedRequest,
   PullRequestReviewSubmissionRequest,
   RepositorySummary,
   ReviewNote,
@@ -23,6 +24,7 @@ export interface PrToolApi {
   setRepositoryStar: (fullName: string, isStarred: boolean) => Promise<string[]>;
   listPullRequests: (owner: string, repo: string) => Promise<PullRequestListItem[]>;
   loadPullRequest: (url: string) => Promise<ReviewWorkspace>;
+  setFileViewed: (request: PullRequestFileViewedRequest) => Promise<void>;
   onReviewPullRequestLink: (handler: (url: string) => void) => () => void;
   saveReviewState: (
     id: string,
@@ -48,6 +50,7 @@ const api: PrToolApi = {
   setRepositoryStar: (fullName, isStarred) => ipcRenderer.invoke("repos:setStar", fullName, isStarred) as Promise<string[]>,
   listPullRequests: (owner, repo) => ipcRenderer.invoke("prs:list", owner, repo) as Promise<PullRequestListItem[]>,
   loadPullRequest: (url) => ipcRenderer.invoke("pr:load", url) as Promise<ReviewWorkspace>,
+  setFileViewed: (request) => ipcRenderer.invoke("pr:setFileViewed", request) as Promise<void>,
   onReviewPullRequestLink: (handler) => {
     const listener = (_event: IpcRendererEvent, url: string) => {
       handler(url);

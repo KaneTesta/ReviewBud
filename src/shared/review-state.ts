@@ -2,6 +2,7 @@ import type {
   DraftReviewComment,
   DraftReviewSubmission,
   PullRequestFile,
+  PullRequestFileViewedRequest,
   ReviewNote,
   ReviewOutcome,
   ReviewWorkspace,
@@ -27,6 +28,17 @@ export function toggleFileViewed(notes: ReviewNote[], file: string): ReviewNote[
       ? { ...note, status: note.status === "done" ? "unread" : "done" }
       : note,
   );
+}
+
+export async function syncFileViewed(
+  notes: ReviewNote[],
+  pullRequestId: string,
+  file: string,
+  setFileViewed: (request: PullRequestFileViewedRequest) => Promise<void>,
+): Promise<ReviewNote[]> {
+  const viewed = notes.find((note) => note.file === file)?.status !== "done";
+  await setFileViewed({ pullRequestId, path: file, viewed });
+  return toggleFileViewed(notes, file);
 }
 
 export function upsertDraftComment(

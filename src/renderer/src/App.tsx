@@ -59,6 +59,7 @@ import {
   adjacentFile,
   completedAllFiles,
   reviewProgress,
+  syncFileViewed,
   toggleFileViewed,
   upsertDraftComment,
   withReviewState,
@@ -178,11 +179,13 @@ export function App() {
   >({});
   const [finishReviewOpen, setFinishReviewOpen] = useState(false);
   const [isPublishingReview, setIsPublishingReview] = useState(false);
+  const [isUpdatingFileViewed, setIsUpdatingFileViewed] = useState(false);
   const [finishReviewError, setFinishReviewError] = useState<string | null>(null);
   const [prDescriptionOpen, setPrDescriptionOpen] = useState(false);
   const [fileSources, setFileSources] = useState<Record<string, string>>({});
   const [expandedDiffGaps, setExpandedDiffGaps] = useState<Record<string, string[]>>({});
   const contextPanePercentRef = useRef(50);
+  const workspaceRef = useRef<ReviewWorkspace | null>(null);
   const reviewStateSaveRef = useRef<Promise<void>>(Promise.resolve());
   const reviewColumnsRef = useRef<HTMLDivElement | null>(null);
   const previousReviewProgressRef = useRef<ReturnType<typeof reviewProgress> | null>(
@@ -298,7 +301,7 @@ export function App() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [currentFile, prDescriptionOpen, workspace]);
+  }, [currentFile, isUpdatingFileViewed, prDescriptionOpen, workspace]);
 
   function closeSymbolContext() {
     setSymbolContexts([]);
@@ -388,7 +391,7 @@ export function App() {
     try {
       const nextWorkspace = await window.prTool.loadPullRequest(nextUrl);
       previousReviewProgressRef.current = null;
-      setWorkspace(nextWorkspace);
+      replaceWorkspace(nextWorkspace);
       setSelectedFile(nextWorkspace.pullRequest.files[0]?.filename ?? null);
       setSymbolContexts([]);
       setSnippetExplanations([]);
@@ -449,8 +452,13 @@ export function App() {
     }
   }
 
-  function persistWorkspace(nextWorkspace: ReviewWorkspace) {
+  function replaceWorkspace(nextWorkspace: ReviewWorkspace | null) {
+    workspaceRef.current = nextWorkspace;
     setWorkspace(nextWorkspace);
+  }
+
+  function persistWorkspace(nextWorkspace: ReviewWorkspace) {
+    replaceWorkspace(nextWorkspace);
     const save = reviewStateSaveRef.current
       .catch(() => undefined)
       .then(async () => {
@@ -477,13 +485,34 @@ export function App() {
     }
   }
 
-  function toggleCurrentFileViewed() {
-    if (!workspace || !currentFile) return;
-    persistWorkspace(
-      withReviewState(workspace, {
-        notes: toggleFileViewed(workspace.notes, currentFile.filename),
-      }),
-    );
+  async function toggleCurrentFileViewed() {
+    if (!workspace || !currentFile || isUpdatingFileViewed) return;
+    const workspaceId = workspace.pullRequest.summary.id;
+    const file = currentFile.filename;
+    setIsUpdatingFileViewed(true);
+    setError(null);
+
+    try {
+      await syncFileViewed(
+        workspace.notes,
+        workspace.pullRequest.summary.nodeId,
+        file,
+        window.prTool.setFileViewed,
+      );
+      const latestWorkspace = workspaceRef.current;
+      if (latestWorkspace?.pullRequest.summary.id !== workspaceId) return;
+      persistWorkspace(
+        withReviewState(latestWorkspace, {
+          notes: toggleFileViewed(latestWorkspace.notes, file),
+        }),
+      );
+    } catch (viewedError) {
+      setError(
+        viewedError instanceof Error ? viewedError.message : String(viewedError),
+      );
+    } finally {
+      setIsUpdatingFileViewed(false);
+    }
   }
 
   function saveDraftComment(
@@ -520,7 +549,7 @@ export function App() {
         body,
         comments: workspace.draftComments ?? [],
       });
-      setWorkspace(nextWorkspace);
+      replaceWorkspace(nextWorkspace);
       setFinishReviewOpen(false);
     } catch (submitError) {
       setFinishReviewError(
@@ -556,7 +585,7 @@ export function App() {
         discussionId: discussion.id,
         body: trimmedBody,
       });
-      setWorkspace(nextWorkspace);
+      replaceWorkspace(nextWorkspace);
       setReplyStateByDiscussionId((current) => {
         const { [discussion.id]: _removed, ...remaining } = current;
         return remaining;
@@ -651,7 +680,7 @@ export function App() {
   }
 
   function returnToPullRequestList() {
-    setWorkspace(null);
+    replaceWorkspace(null);
     setSelectedFile(null);
     setSymbolContexts([]);
     setSnippetExplanations([]);
@@ -875,6 +904,7 @@ export function App() {
                   onNextFile={() => selectAdjacentFile("next")}
                   onPreviousFile={() => selectAdjacentFile("previous")}
                   onMarkViewed={toggleCurrentFileViewed}
+                  isUpdatingFileViewed={isUpdatingFileViewed}
                   onViewPrDescription={() => setPrDescriptionOpen(true)}
                   onFinishReview={() => setFinishReviewOpen(true)}
                 />
@@ -1061,6 +1091,7 @@ function ReviewActionPane({
   onNextFile,
   onPreviousFile,
   onMarkViewed,
+  isUpdatingFileViewed,
   onViewPrDescription,
   onFinishReview,
 }: {
@@ -1070,6 +1101,7 @@ function ReviewActionPane({
   onNextFile: () => void;
   onPreviousFile: () => void;
   onMarkViewed: () => void;
+  isUpdatingFileViewed: boolean;
   onViewPrDescription: () => void;
   onFinishReview: () => void;
 }) {
@@ -1136,13 +1168,22 @@ function ReviewActionPane({
           <ArrowRight size={15} aria-hidden="true" />
         </ShortcutButton>
         <ShortcutButton
-          label={currentFileViewed ? "Viewed" : "Mark viewed"}
+          label={
+            isUpdatingFileViewed
+              ? "Updating..."
+              : currentFileViewed
+                ? "Viewed"
+                : "Mark viewed"
+          }
           shortcut={shortcuts.viewed}
           intent={currentFileViewed ? "success" : "secondary"}
           pressed={currentFileViewed}
+          disabled={isUpdatingFileViewed}
           onClick={onMarkViewed}
         >
-          {currentFileViewed ? (
+          {isUpdatingFileViewed ? (
+            <Loader2 className="spin" size={15} aria-hidden="true" />
+          ) : currentFileViewed ? (
             <CheckCircle2 size={15} aria-hidden="true" />
           ) : (
             <Eye size={15} aria-hidden="true" />
@@ -1172,6 +1213,7 @@ function ShortcutButton({
   label,
   shortcut,
   pressed,
+  disabled = false,
   intent = "secondary",
   onClick,
   children,
@@ -1179,6 +1221,7 @@ function ShortcutButton({
   label: string;
   shortcut: string;
   pressed?: boolean;
+  disabled?: boolean;
   intent?: "primary" | "secondary" | "success";
   onClick: () => void;
   children: ReactNode;
@@ -1188,6 +1231,7 @@ function ShortcutButton({
       type="button"
       className={`shortcut-button ${intent}${pressed ? " active" : ""}`}
       aria-pressed={pressed}
+      disabled={disabled}
       title={`${label} (${shortcut})`}
       onClick={onClick}
     >

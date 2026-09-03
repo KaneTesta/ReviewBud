@@ -9,6 +9,7 @@ import type { CachedPullRequest } from "../src/shared/types.js";
 const pullRequest: CachedPullRequest = {
   summary: {
     id: "octo-app-42",
+    nodeId: "PR_kwDOExample",
     owner: "octo",
     repo: "app",
     number: 42,

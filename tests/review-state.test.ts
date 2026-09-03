@@ -5,6 +5,7 @@ import {
   completedAllFiles,
   createDraftReview,
   reviewProgress,
+  syncFileViewed,
   toggleFileViewed,
   upsertDraftComment,
 } from "../src/shared/review-state";
@@ -56,6 +57,55 @@ describe("review state helpers", () => {
     assert.deepEqual(toggleFileViewed(notes, "src/a.ts"), [
       { file: "src/a.ts", status: "unread", note: "" },
       { file: "src/b.ts", status: "unread", note: "" },
+    ]);
+  });
+
+  it("returns updated local notes only after GitHub confirms the viewed state", async () => {
+    const notes: ReviewNote[] = [
+      { file: "src/a.ts", status: "unread", note: "" },
+    ];
+    let confirmRemote: (() => void) | undefined;
+    let request: unknown;
+    const pendingNotes = syncFileViewed(
+      notes,
+      "PR_kwDOExample",
+      "src/a.ts",
+      (nextRequest) => {
+        request = nextRequest;
+        return new Promise<void>((resolve) => {
+          confirmRemote = resolve;
+        });
+      },
+    );
+
+    assert.deepEqual(notes, [
+      { file: "src/a.ts", status: "unread", note: "" },
+    ]);
+    assert.deepEqual(request, {
+      pullRequestId: "PR_kwDOExample",
+      path: "src/a.ts",
+      viewed: true,
+    });
+
+    confirmRemote?.();
+    assert.deepEqual(await pendingNotes, [
+      { file: "src/a.ts", status: "done", note: "" },
+    ]);
+  });
+
+  it("retains local notes when GitHub rejects the viewed state", async () => {
+    const notes: ReviewNote[] = [
+      { file: "src/a.ts", status: "done", note: "Checked" },
+    ];
+
+    await assert.rejects(
+      syncFileViewed(notes, "PR_kwDOExample", "src/a.ts", async () => {
+        throw new Error("GitHub denied the update");
+      }),
+      /GitHub denied the update/,
+    );
+    assert.deepEqual(notes, [
+      { file: "src/a.ts", status: "done", note: "Checked" },
     ]);
   });
 

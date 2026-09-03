@@ -5,6 +5,7 @@ import type {
   PullRequestDiscussion,
   PullRequestDiscussionReplyRequest,
   PullRequestFile,
+  PullRequestFileViewedRequest,
   PullRequestListItem,
   PullRequestRef,
   PullRequestReviewSubmissionRequest,
@@ -24,6 +25,7 @@ import { resolvePythonSymbolContextWithLsp } from "./python-lsp.js";
 const execFileAsync = promisify(execFile);
 
 interface GitHubPullResponse {
+  node_id: string;
   html_url: string;
   title: string;
   state: string;
@@ -121,6 +123,42 @@ export interface GitHubCommentResponse {
   start_side?: "LEFT" | "RIGHT" | null;
   created_at: string;
   html_url?: string;
+}
+
+interface FileViewedMutation {
+  mutationName: "markFileAsViewed" | "unmarkFileAsViewed";
+  query: string;
+  variables: {
+    pullRequestId: string;
+    path: string;
+  };
+}
+
+export function buildFileViewedMutation(
+  request: PullRequestFileViewedRequest,
+): FileViewedMutation {
+  const mutationName = request.viewed
+    ? "markFileAsViewed"
+    : "unmarkFileAsViewed";
+  return {
+    mutationName,
+    query: `
+      mutation($pullRequestId: ID!, $path: String!) {
+        ${mutationName}(input: { pullRequestId: $pullRequestId, path: $path }) {
+          clientMutationId
+        }
+      }
+    `,
+    variables: {
+      pullRequestId: request.pullRequestId,
+      path: request.path,
+    },
+  };
+}
+
+interface FileViewedMutationResponse {
+  data?: Partial<Record<FileViewedMutation["mutationName"], unknown>>;
+  errors?: Array<{ message?: string }>;
 }
 
 async function ghJson<T>(args: string[]): Promise<T> {
@@ -268,6 +306,32 @@ export async function submitPullRequestReview(
     ],
     payload,
   );
+}
+
+export async function setPullRequestFileViewed(
+  request: PullRequestFileViewedRequest,
+): Promise<void> {
+  const mutation = buildFileViewedMutation(request);
+  const response = await ghJson<FileViewedMutationResponse>([
+    "graphql",
+    "-f",
+    `query=${mutation.query}`,
+    "-f",
+    `pullRequestId=${mutation.variables.pullRequestId}`,
+    "-f",
+    `path=${mutation.variables.path}`,
+  ]);
+
+  if (response.errors?.length) {
+    const message = response.errors
+      .map((error) => error.message)
+      .filter(Boolean)
+      .join("; ");
+    throw new Error(message || "GitHub could not update the file viewed state.");
+  }
+  if (!response.data?.[mutation.mutationName]) {
+    throw new Error("GitHub did not confirm the file viewed state update.");
+  }
 }
 
 export async function fetchRecentRepositories(): Promise<RepositorySummary[]> {
@@ -583,6 +647,7 @@ function normalizeSummary(
   return {
     ...ref,
     id: pullRequestId(ref),
+    nodeId: pr.node_id,
     url: pr.html_url,
     title: pr.title,
     state: pr.state,
